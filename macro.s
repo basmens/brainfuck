@@ -5,7 +5,7 @@
 .endm
 
 .macro EPILOGUE
-    movq %rsp, %rbp
+    movq %rbp, %rsp
     popq %rbp
     ret
 .endm
