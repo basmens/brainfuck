@@ -49,10 +49,10 @@ compile:
 		-: 0010 1101
 		<: 0011 1100
 		>: 0011 1110
-		.: 0010 1100
-		,: 0010 1110
 		[: 0101 1011
 		]: 0101 1101
+		.: 0010 1100
+		,: 0010 1110
 
 		\n: 0000 1010
 		CR: 0000 1101
@@ -93,20 +93,20 @@ compile_return:
 	
 compile_jmp_table:
 	.quad compile_return 	# 0, zero termination
-	.quad compile_loop 			# 1, space
-	.quad compile_plus 	# 2, +
+	.quad compile_loop 		# 1, space
+	.quad compile_plus		# 2, +
 	.quad compile_return 	# 3
 	.quad compile_if		# 4, [
 	.quad compile_in		# 5, ,
-	.quad compile_left 	# 6, <
-	.quad compile_loop 			# 7, carriage return
-	.quad compile_minus	# 8, -
+	.quad compile_left		# 6, <
+	.quad compile_loop		# 7, carriage return
+	.quad compile_minus		# 8, -
 	.quad compile_return	# 9
 	.quad compile_for		# 10, ]
 	.quad compile_out		# 11, .
-	.quad compile_right	# 12, >
+	.quad compile_right		# 12, >
 	.quad compile_return	# 13
-	.quad compile_loop			# 14, new line
+	.quad compile_loop		# 14, new line
 
 
 compile_plus:
@@ -139,12 +139,12 @@ compile_for:
 	incq %r14
 	jmp compile_loop
 
-compile_out:
+compile_in:
 	movq $7, (%r14)
 	incq %r14
 	jmp compile_loop
 
-compile_in:
+compile_out:
 	movq $8, (%r14)
 	incq %r14
 	jmp compile_loop
@@ -202,57 +202,52 @@ run_instruction_jmp_table:
 
 
 run_instruction_plus:
-	movq $0, %rax
-	movb $0x2b, out_format
-	movq $out_format, %rdi
-	call printf
+	movb runtime_memory(%r13), %al
+	incb %al
+	movb %al, runtime_memory(%r13)
 	jmp run_loop
 	
 run_instruction_minus:
-	movq $0, %rax
-	movb $0x2d, out_format
-	movq $out_format, %rdi
-	call printf
+	movb runtime_memory(%r13), %al
+	decb %al
+	movb %al, runtime_memory(%r13)
 	jmp run_loop
 	
 run_instruction_left:
-	movq $0, %rax
-	movb $0x3c, out_format
-	movq $out_format, %rdi
-	call printf
+	decq %r13
 	jmp run_loop
 	
 run_instruction_right:
-	movq $0, %rax
-	movb $0x3e, out_format
-	movq $out_format, %rdi
-	call printf
+	incq %r13
 	jmp run_loop
 	
 run_instruction_if:
-	movq $0, %rax
-	movb $0x5b, out_format
-	movq $out_format, %rdi
-	call printf
-	jmp run_loop
+	cmpb $0, runtime_memory(%r13)
+	jne run_loop
+	cmpb $6, src(%r12)
+	je run_loop
+	incq %r12
+	jmp run_instruction_if
 	
 run_instruction_for:
-	movq $0, %rax
-	movb $0x5d, out_format
-	movq $out_format, %rdi
-	call printf
-	jmp run_loop
+	cmpb $0, runtime_memory(%r13)
+	je run_loop
+	cmpb $5, src(%r12)
+	je run_loop
+	decq %r12
+	jmp run_instruction_for
 	
 run_instruction_in:
 	movq $0, %rax
-	movb $0x2e, out_format
+	movb $0x2c, out_format
 	movq $out_format, %rdi
 	call printf
 	jmp run_loop
 
 run_instruction_out:
 	movq $0, %rax
-	movb $0x2c, out_format
+	movb runtime_memory(%r13), %al
+	movb %al, out_format
 	movq $out_format, %rdi
 	call printf
 	jmp run_loop
