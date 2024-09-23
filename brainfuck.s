@@ -1,10 +1,46 @@
 .global brainfuck
 
-.include "macro.s"
+# Prologue and epilogue
+.macro PROLOGUE
+    pushq %rbp
+    movq %rsp, %rbp
+.endm
+
+.macro EPILOGUE
+    movq %rbp, %rsp
+    popq %rbp
+    ret
+.endm
+
+# Parameters
+.macro PARAM1 p1
+    movq \p1, %rdi
+.endm
+
+.macro PARAM2 p1, p2
+    movq \p1, %rdi
+    movq \p2, %rsi
+.endm
+
+.macro PARAM3 p1, p2, p3
+    movq \p1, %rdi
+    movq \p2, %rsi
+    movq \p3, %rdx
+.endm
+
+.macro PARAM4 p1, p2, p3, p4
+    movq \p1, %rdi
+    movq \p2, %rsi
+    movq \p3, %rdx
+    movq \p4, %rcx
+.endm
+
+
+
+
 
 .data
 src: .skip 2048, 0
-out_format: .word 0
 runtime_memory: .skip 30000, 0
 
 .text
@@ -66,10 +102,10 @@ compile:
 	pushq %rax # -40 Magic number
 	subq $8, %rsp
 
-	# Move program string into %r12, set loop counter to -1 and src counter to $src
+	# Move program string into %r12, set loop counter to -1 and src counter to 0
 	movq %rdi, %r12
 	movq $-1, %r13
-	movq $src, %r14
+	movq $0, %r14
 compile_loop:
 	# Increment loop counter
 	incq %r13
@@ -108,45 +144,61 @@ compile_jmp_table:
 	.quad compile_return	# 13
 	.quad compile_loop		# 14, new line
 
+/*
+	Compiles brainfuck program into 2 byte instructions. Each instruction contains a the instruction itself
+	in the 5 least significant bits. Then 11 bits are reserved for parameters.
+*/
 
 compile_plus:
-	movq $1, (%r14)
-	incq %r14
+	movw $1, src(%r14)
+	addq $2, %r14
 	jmp compile_loop
 
 compile_minus:
-	movq $2, (%r14)
-	incq %r14
+	movw $2, src(%r14)
+	addq $2, %r14
 	jmp compile_loop
 
 compile_left:
-	movq $3, (%r14)
-	incq %r14
+	movw $3, src(%r14)
+	addq $2, %r14
 	jmp compile_loop
 
 compile_right:
-	movq $4, (%r14)
-	incq %r14
+	movw $4, src(%r14)
+	addq $2, %r14
 	jmp compile_loop
 
 compile_if:
-	movq $5, (%r14)
-	incq %r14
+	pushq %r14
+	movw $5, src(%r14)
+	addq $2, %r14
 	jmp compile_loop
 
 compile_for:
-	movq $6, (%r14)
-	incq %r14
+	movq (%rsp), %rdx # Get if adress
+
+	movq %r14, %rax # Insert current adress into if instruction
+	shlq $5, %rax
+	orw %ax, src(%rdx)
+
+	shlq $5, %rdx # Calc parameter
+	orq $6, %rdx
+	movw %dx, src(%r14) # Store instruction
+
+	addq $8, %rsp # Pop if off the stack
+
+	addq $2, %r14 # Increment adress
 	jmp compile_loop
 
 compile_in:
-	movq $7, (%r14)
-	incq %r14
+	movw $7, src(%r14)
+	addq $2, %r14
 	jmp compile_loop
 
 compile_out:
-	movq $8, (%r14)
-	incq %r14
+	movw $8, src(%r14)
+	addq $2, %r14
 	jmp compile_loop
 
 
@@ -165,22 +217,27 @@ run:
 	# Free up %r12-15
 	push %r12 # -8  Becomes src counter
 	push %r13 # -16 Becomes memory pointer
-	push %r14 # -24
+	push %r14 # -24 Becomes output counter
 	push %r15 # -32
 
 	# Init src counter at -1 and memory pointer to 0
-	movq $-1, %r12
+	movq $-2, %r12
 	movq $0, %r13
+	movq $0, %r14
 run_loop:
 	# Increment loop counter
-	incq %r12
+	addq $2, %r12
 
 	# Jump into instruction table
-	movzb src(%r12), %rax # Get instruction
+	movzw src(%r12), %rax # Get instruction
+	andq $0x1F, %rax
 	shlq $3, %rax
 	jmp *run_instruction_jmp_table(%rax)
 
 run_return:
+	movq $0xa, %rdi
+	call putchar
+
 	# Restore %r12-15
 	movq -8(%rbp), %r12
 	movq -16(%rbp), %r13
@@ -200,17 +257,12 @@ run_instruction_jmp_table:
 	.quad run_instruction_in		# 7 in
 	.quad run_instruction_out		# 8 out
 
-
 run_instruction_plus:
-	movb runtime_memory(%r13), %al
-	incb %al
-	movb %al, runtime_memory(%r13)
+	addb $1, runtime_memory(%r13)
 	jmp run_loop
 	
 run_instruction_minus:
-	movb runtime_memory(%r13), %al
-	decb %al
-	movb %al, runtime_memory(%r13)
+	subb $1, runtime_memory(%r13)
 	jmp run_loop
 	
 run_instruction_left:
@@ -224,30 +276,32 @@ run_instruction_right:
 run_instruction_if:
 	cmpb $0, runtime_memory(%r13)
 	jne run_loop
-	cmpb $6, src(%r12)
-	je run_loop
-	incq %r12
-	jmp run_instruction_if
+	movzw src(%r12), %rax
+	shrq $5, %rax
+	movq %rax, %r12
+	jmp run_loop
 	
 run_instruction_for:
 	cmpb $0, runtime_memory(%r13)
 	je run_loop
-	cmpb $5, src(%r12)
-	je run_loop
-	decq %r12
-	jmp run_instruction_for
+	movzw src(%r12), %rax
+	shrq $5, %rax
+	movq %rax, %r12
+	jmp run_loop
 	
 run_instruction_in:
-	movq $0, %rax
-	movb $0x2c, out_format
-	movq $out_format, %rdi
-	call printf
+	call getchar
+	movb %al, runtime_memory(%r13)
 	jmp run_loop
 
 run_instruction_out:
 	movq $0, %rax
 	movb runtime_memory(%r13), %al
-	movb %al, out_format
-	movq $out_format, %rdi
-	call printf
+	movzb %al, %rdi
+	call putchar
+
+	incq %r14
+	cmpq $3500, %r14
+	je run_return
+
 	jmp run_loop
