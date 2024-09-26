@@ -1,6 +1,14 @@
 .global main_test
 .global intermediate_src_size
 .global executed_operations
+.global compile_time_out
+
+.macro GET_TIME addr_out
+	movq \addr_out, %rsi
+	movq $228, %rax # clock_gettime
+	movq $CLOCK_REALTIME, %rdi
+	syscall
+.endm
 
 .equ CLOCK_REALTIME, 0
 
@@ -9,16 +17,27 @@ program_name: .quad 0
 program_size: .quad 0
 intermediate_src_size: .quad 0
 executed_operations: .quad 0
-time_nanos: .quad 0
+time_nanos_compiler: .quad 0
+time_nanos_runner: .quad 0
 
-.equ TEST_REPETITION_COUNT, 1
+/* Timespec struct:
+	struct timespec {
+		time_t seconds; time_t is 8 byte on 64 bit platform
+		long nanos;
+	}
+*/
+compile_time_out:
+	.quad 0 # Second
+	.quad 0 # Nanos
+
 
 .text
+.equ TEST_REPETITION_COUNT, 1
 
 usage_format: .asciz "usage: %s <filename>\n"
 
 # Program name, program size, intermediate src size, executed operations, time in nanos
-program_statistics_format: .asciz "\n\n%s\t%lu\t%lu\t%lu\t%lu\n"
+program_statistics_format: .asciz "\n\n%s;%lu;%lu;%lu;%lu;%lu;Merge same operations\n"
 
 main_test:
 	pushq %rbp
@@ -64,16 +83,21 @@ test_loop:
 	decq -8(%rbp)
 	jnz test_loop
 
-	# Divide executed operations and time nanos by repetition count
+	# Divide executed operations, time nanos compiler and time nanos runner by repetition count
 	movq $TEST_REPETITION_COUNT, %rdi
 	movq $0, %rdx
 	movq executed_operations, %rax
 	divq %rdi
 	movq %rax, %r8	# Executed operations
 	movq $0, %rdx
-	movq time_nanos, %rax
+	movq time_nanos_compiler, %rax
 	divq %rdi
-	movq %rax, %r9 # Time nanos
+	movq %rax, %r9 # Time nanos compiler
+	movq $0, %rdx
+	movq time_nanos_runner, %rax
+	divq %rdi
+	pushq $0 # Keeping stack aligned
+	pushq %rax # Time nanos runner
 
 	# Print statistics
 	movq $0, %rax
@@ -107,7 +131,6 @@ failed:
 	ret
 
 
-
 test_once:
 	pushq %rbp
 	movq %rsp, %rbp
@@ -115,35 +138,33 @@ test_once:
 	movq %rdi, -24(%rbp)
 
 	# Get the first time stamp
-	movq $228, %rax # clock_gettime
-	movq $CLOCK_REALTIME, %rdi
-	leaq -16(%rbp), %rsi
-	syscall
-
-	/* Timespec struct:
-		struct timespec {
-			time_t seconds; time_t is 8 byte on 64 bit platform
-			long nanos;
-		}
-	*/
+	leaq -16(%rbp), %rdi
+	GET_TIME %rdi
 
 	movq -24(%rbp), %rdi
 	call brainfuck
 
 	# Get the second time stamp
-	movq $228, %rax # clock_gettime
-	movq $CLOCK_REALTIME, %rdi
-	leaq -32(%rbp), %rsi
-	syscall
+	leaq -32(%rbp), %rdi
+	GET_TIME %rdi
 
-	# Save time
+	# Save time compiler
+	movq compile_time_out, %rax # Move end stamp seconds into %rax
+	subq -16(%rbp), %rax # Subtract begin stamp seconds from %rax
+	movq $1000000000, %rdx # Multiply by 1e9
+	mulq %rdx
+	addq compile_time_out + 8, %rax # Add end stamp nanos to %rax
+	subq -8(%rbp), %rax # Subtract begin stamp nanon from %rax
+	addq %rax, time_nanos_compiler # Save into memory
+
+	# Save time runner
 	movq -32(%rbp), %rax # Move end stamp seconds into %rax
 	subq -16(%rbp), %rax # Subtract begin stamp seconds from %rax
 	movq $1000000000, %rdx # Multiply by 1e9
 	mulq %rdx
 	addq -24(%rbp), %rax # Add end stamp nanos to %rax
 	subq -8(%rbp), %rax # Subtract begin stamp nanon from %rax
-	addq %rax, time_nanos # Save into memory
+	addq %rax, time_nanos_runner # Save into memory
 
 	# Reset brainfuck memory
 	movq $32048, %rcx
