@@ -52,6 +52,14 @@
 .endm
 
 
+# Limit print count, for stats, use 1000
+.macro LIMIT_PRINT_COUNT
+	incq %r14
+	cmpq $1000, %r14
+	je run_return
+.endm
+
+
 .equ INSTRUCTION_SIZE, 2 # In bytes
 .equ OP_CODE_SIZE, 5 # In bits
 .equ OP_CODE_BIT_MASK, 0x1f
@@ -330,8 +338,6 @@ run_instruction_out:
 	movzb %al, %rdi
 	call putchar
 
-	// incq %r14
-	// cmpq $1560, %r14
-	// je run_return
+	LIMIT_PRINT_COUNT
 
 	jmp run_loop
