@@ -11,6 +11,8 @@ intermediate_src_size: .quad 0
 executed_operations: .quad 0
 time_nanos: .quad 0
 
+.equ TEST_REPETITION_COUNT, 1
+
 .text
 
 usage_format: .asciz "usage: %s <filename>\n"
@@ -41,39 +43,37 @@ main_test:
 	jz failed
 	movq %rax, -16(%rbp)
 
-	# Get the first time stamp
-    subq $32, %rsp # Allocate memory for the 2 timespec structs
-	movq $228, %rax # clock_gettime
-	movq $CLOCK_REALTIME, %rdi
-	leaq -32(%rbp), %rsi
+	# Prepare sleep structure
+	pushq $0 # Sleep 0 seconds
+	pushq $10000000 # And 10_00_000 nanoseconds
+
+	# Run repetition count times
+	movq $TEST_REPETITION_COUNT, -8(%rbp)
+test_loop:
+	# Call test
+	movq -16(%rbp), %rdi
+	call test_once
+
+	# Sleep
+	movq $162, %rax # Nanosleep call
+	leaq -32(%rbp), %rdi
+	movq $0, %rsi
 	syscall
 
-	/* Timespec struct:
-		struct timespec {
-			time_t seconds; time_t is 8 byte on 64 bit platform
-			long nanos;
-		}
-	*/
+	# Loop
+	decq -8(%rbp)
+	jnz test_loop
 
-	# Now we're calling you.
-	# Good luck.
-	movq -16(%rbp), %rdi
-	call brainfuck
-
-	# Get the second time stamp
-	movq $228, %rax # clock_gettime
-	movq $CLOCK_REALTIME, %rdi
-	leaq -48(%rbp), %rsi
-	call clock_gettime
-
-	# Calculate time taken in nanos
-	movq -48(%rbp), %rax # Move end stamp seconds into %rax
-	subq -32(%rbp), %rax # Subtract begin stamp seconds from %rax
-	movq $1000000000, %rdx # Multiply by 1e9
-	mulq %rdx
-	addq -40(%rbp), %rax # Add end stamp nanos to %rax
-	subq -24(%rbp), %rax # Subtract begin stamp nanon from %rax
-	movq %rax, time_nanos # Save into memory
+	# Divide executed operations and time nanos by repetition count
+	movq $TEST_REPETITION_COUNT, %rdi
+	movq $0, %rdx
+	movq executed_operations, %rax
+	divq %rdi
+	movq %rax, %r8	# Executed operations
+	movq $0, %rdx
+	movq time_nanos, %rax
+	divq %rdi
+	movq %rax, %r9 # Time nanos
 
 	# Print statistics
 	movq $0, %rax
@@ -81,8 +81,6 @@ main_test:
 	movq program_name, %rsi # Name
 	movq program_size, %rdx # Length
 	movq intermediate_src_size, %rcx	# Intermediate src length
-	movq executed_operations, %r8	# Executed instructions
-	movq time_nanos, %r9	# Time in nanos
 	call printf
 
 	# Free the buffer allocated by read_file.
@@ -110,7 +108,53 @@ failed:
 
 
 
+test_once:
+	pushq %rbp
+	movq %rsp, %rbp
+	subq $32, %rsp
+	movq %rdi, -24(%rbp)
 
+	# Get the first time stamp
+	movq $228, %rax # clock_gettime
+	movq $CLOCK_REALTIME, %rdi
+	leaq -16(%rbp), %rsi
+	syscall
+
+	/* Timespec struct:
+		struct timespec {
+			time_t seconds; time_t is 8 byte on 64 bit platform
+			long nanos;
+		}
+	*/
+
+	movq -24(%rbp), %rdi
+	call brainfuck
+
+	# Get the second time stamp
+	movq $228, %rax # clock_gettime
+	movq $CLOCK_REALTIME, %rdi
+	leaq -32(%rbp), %rsi
+	syscall
+
+	# Save time
+	movq -32(%rbp), %rax # Move end stamp seconds into %rax
+	subq -16(%rbp), %rax # Subtract begin stamp seconds from %rax
+	movq $1000000000, %rdx # Multiply by 1e9
+	mulq %rdx
+	addq -24(%rbp), %rax # Add end stamp nanos to %rax
+	subq -8(%rbp), %rax # Subtract begin stamp nanon from %rax
+	addq %rax, time_nanos # Save into memory
+
+	# Reset brainfuck memory
+	movq $32048, %rcx
+test_reset_loop:
+	subq $8, %rcx
+	movq $0, intermediate_src(%rcx)
+	jnz test_reset_loop
+
+	movq %rbp, %rsp
+	popq %rbp
+	ret
 
 
 

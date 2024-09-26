@@ -1,4 +1,6 @@
 .global brainfuck
+.global intermediate_src
+.global runtime_memory
 
 # Prologue and epilogue
 .macro PROLOGUE
@@ -57,7 +59,7 @@
 
 
 .data
-src: .skip 2048, 0
+intermediate_src: .skip 2048, 0
 runtime_memory: .skip 30000, 0
 
 .text
@@ -86,13 +88,13 @@ brainfuck:
 		%rdi, The string to compile
 	Returns: void
 	Description:
-		Compiles the code and outputs it in $src
+		Compiles the code and outputs it in $intermediate_src
 */
 compile:
 	PROLOGUE
 
 	# Free up %r12-15
-	push %r12 # -8  Becomes src counter
+	push %r12 # -8  Becomes intermediate_src counter
 	push %r13 # -16 Becomes loop counter
 	push %r14 # -24 Becomes program string
 	push %r15 # -32 Becomes instruction repetition counter
@@ -119,7 +121,7 @@ compile:
 	pushq %rax # -40 Magic number
 	subq $8, %rsp
 
-	# Move src counter to 0, set loop counter to -1 and program string into %r14
+	# Move intermediate_src counter to 0, set loop counter to -1 and program string into %r14
 	movq $0, %r12
 	movq $-1, %r13
 	movq %rdi, %r14
@@ -190,7 +192,7 @@ compile_jmp_table:
 
 compile_if:
 	pushq %r12
-	movw $INSTRUCTION_IF, src(%r12)
+	movw $INSTRUCTION_IF, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
@@ -199,11 +201,11 @@ compile_for:
 
 	movq %r12, %rax # Insert current adress into if instruction
 	shlq $3, %rax
-	orw %ax, src(%rdx)
+	orw %ax, intermediate_src(%rdx)
 
 	shlq $3, %rdx # Insert if adress into current instruction
 	orq $INSTRUCTION_FOR, %rdx
-	movw %dx, src(%r12) # Store instruction
+	movw %dx, intermediate_src(%r12) # Store instruction
 
 	addq $8, %rsp # Pop if off the stack
 
@@ -211,40 +213,40 @@ compile_for:
 	jmp compile_loop
 
 compile_left:
-	movw $INSTRUCTION_LEFT, src(%r12)
+	movw $INSTRUCTION_LEFT, intermediate_src(%r12)
 	shlq $OP_CODE_SIZE, %r15
-	orw %r15w, src(%r12)
+	orw %r15w, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_right:
-	movw $INSTRUCTION_RIGHT, src(%r12)
+	movw $INSTRUCTION_RIGHT, intermediate_src(%r12)
 	shlq $OP_CODE_SIZE, %r15
-	orw %r15w, src(%r12)
+	orw %r15w, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_plus:
-	movw $INSTRUCTION_PLUS, src(%r12)
+	movw $INSTRUCTION_PLUS, intermediate_src(%r12)
 	shlq $OP_CODE_SIZE, %r15
-	orw %r15w, src(%r12)
+	orw %r15w, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_minus:
-	movw $INSTRUCTION_MINUS, src(%r12)
+	movw $INSTRUCTION_MINUS, intermediate_src(%r12)
 	shlq $OP_CODE_SIZE, %r15
-	orw %r15w, src(%r12)
+	orw %r15w, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_in:
-	movw $INSTRUCTION_IN, src(%r12)
+	movw $INSTRUCTION_IN, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_out:
-	movw $INSTRUCTION_OUT, src(%r12)
+	movw $INSTRUCTION_OUT, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
@@ -256,22 +258,22 @@ compile_out:
 	Parameters: none
 	Returns: void
 	Description:
-		Runs the compiles brainfuck code located in $src
+		Runs the compiles brainfuck code located in $intermediate_src
 */
 run:
 	PROLOGUE
 
 	# Free up %r12-15
-	push %r12 # -8  Becomes src counter
+	push %r12 # -8  Becomes intermediate_src counter
 	push %r13 # -16 Becomes memory pointer
 	push %r14 # -24 Becomes output counter
 	push %r15 # -32
 
-	# Init src counter at -1 and memory pointer to 0
+	# Init intermediate_src counter at -1 and memory pointer to 0
 	movq $-INSTRUCTION_SIZE, %r12
 	movq $0, %r13
 	movq $0, %r14
-	movq $src, %r15
+	movq $intermediate_src, %r15
 run_loop:
 	# Increment loop counter
 	addq $INSTRUCTION_SIZE, %r12
@@ -279,7 +281,7 @@ run_loop:
 	INCR_EXECUTED_OPERATIONS_STAT # Comment out above
 
 	# Jump into instruction table
-	movzw src(%r12), %rax # Get instruction
+	movzw intermediate_src(%r12), %rax # Get instruction
 	andq $OP_CODE_BIT_MASK, %rax
 	shlq $3, %rax
 	jmp *run_instruction_jmp_table(%rax)
@@ -341,7 +343,7 @@ run_instruction_jmp_table:
 run_instruction_if:
 	cmpb $0, runtime_memory(%r13)
 	jne run_loop
-	movzw src(%r12), %rax
+	movzw intermediate_src(%r12), %rax
 	shrq $3, %rax
 	movq %rax, %r12
 	jmp run_loop
@@ -349,31 +351,31 @@ run_instruction_if:
 run_instruction_for:
 	cmpb $0, runtime_memory(%r13)
 	je run_loop
-	movzw src(%r12), %rax
+	movzw intermediate_src(%r12), %rax
 	shrq $3, %rax
 	movq %rax, %r12
 	jmp run_loop
 	
 run_instruction_left:
-	movzw src(%r12), %rax
+	movzw intermediate_src(%r12), %rax
 	shrq $OP_CODE_SIZE, %rax
 	subq %rax, %r13
 	jmp run_loop
 	
 run_instruction_right:
-	movzw src(%r12), %rax
+	movzw intermediate_src(%r12), %rax
 	shrq $OP_CODE_SIZE, %rax
 	addq %rax, %r13
 	jmp run_loop
 
 run_instruction_plus:
-	movzw src(%r12), %rax
+	movzw intermediate_src(%r12), %rax
 	shrq $OP_CODE_SIZE, %rax
 	addb %al, runtime_memory(%r13)
 	jmp run_loop
 	
 run_instruction_minus:
-	movzw src(%r12), %rax
+	movzw intermediate_src(%r12), %rax
 	shrq $OP_CODE_SIZE, %rax
 	subb %al, runtime_memory(%r13)
 	jmp run_loop
