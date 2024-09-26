@@ -1,4 +1,4 @@
-objects = build/main.o build/brainfuck.o build/read_file.o
+objects = build/main.o build/brainfuck.o build/read_file.o build/main_test.o
 .PHONY: clean
 
 brainfuck: $(objects)

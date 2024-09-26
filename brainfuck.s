@@ -36,7 +36,23 @@
 .endm
 
 
-.equ INSTRUCTION_SIZE, 2
+# Comment out here to switch off statistics
+.macro SET_INTERMEDIATE_SRC_SIZE_STAT
+	movq %r12, %rax
+	movq $0, %rdx
+	movq $INSTRUCTION_SIZE, %rdi
+	divq %rdi
+	movq %rax, intermediate_src_size
+.endm
+
+.macro INCR_EXECUTED_OPERATIONS_STAT
+	incq executed_operations
+.endm
+
+
+.equ INSTRUCTION_SIZE, 2 # In bytes
+.equ OP_CODE_SIZE, 5 # In bits
+.equ OP_CODE_BIT_MASK, 0x1f
 
 
 
@@ -79,7 +95,7 @@ compile:
 	push %r12 # -8  Becomes src counter
 	push %r13 # -16 Becomes loop counter
 	push %r14 # -24 Becomes program string
-	push %r15 # -32
+	push %r15 # -32 Becomes instruction repetition counter
 
 	/* bit representation in ascii of the 8 instructions
 		+: 0010 1011
@@ -113,6 +129,26 @@ compile_loop:
 
 	# Get char
 	movzb (%r14, %r13), %rax
+	
+	// TMP CODE
+	cmpb $0x5b, %al
+	je skip_char_counter
+	cmpb $0x5d, %al
+	je skip_char_counter
+	cmpb $0x2c, %al
+	je skip_char_counter
+	cmpb $0x2e, %al
+	je skip_char_counter
+
+	movq $0, %r15
+	decq %r13
+char_counter_loop:
+	incq %r13
+	incq %r15
+	cmpb 1(%r14, %r13), %al
+	je char_counter_loop
+skip_char_counter:
+	//
 
 	# Jmp into switch statement
 	mulq -40(%rbp)
@@ -121,6 +157,8 @@ compile_loop:
 	jmp *compile_jmp_table(%rax)
 
 compile_return:
+	SET_INTERMEDIATE_SRC_SIZE_STAT # Comment out above
+
 	# Restore %r12-15
 	movq -8(%rbp), %r12
 	movq -16(%rbp), %r13
@@ -174,21 +212,29 @@ compile_for:
 
 compile_left:
 	movw $INSTRUCTION_LEFT, src(%r12)
+	shlq $OP_CODE_SIZE, %r15
+	orw %r15w, src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_right:
 	movw $INSTRUCTION_RIGHT, src(%r12)
+	shlq $OP_CODE_SIZE, %r15
+	orw %r15w, src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_plus:
 	movw $INSTRUCTION_PLUS, src(%r12)
+	shlq $OP_CODE_SIZE, %r15
+	orw %r15w, src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_minus:
 	movw $INSTRUCTION_MINUS, src(%r12)
+	shlq $OP_CODE_SIZE, %r15
+	orw %r15w, src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
@@ -230,16 +276,15 @@ run_loop:
 	# Increment loop counter
 	addq $INSTRUCTION_SIZE, %r12
 
+	INCR_EXECUTED_OPERATIONS_STAT # Comment out above
+
 	# Jump into instruction table
 	movzw src(%r12), %rax # Get instruction
-	andq $0x1F, %rax
+	andq $OP_CODE_BIT_MASK, %rax
 	shlq $3, %rax
 	jmp *run_instruction_jmp_table(%rax)
 
 run_return:
-	movq $0xa, %rdi
-	call putchar
-
 	# Restore %r12-15
 	movq -8(%rbp), %r12
 	movq -16(%rbp), %r13
@@ -249,45 +294,45 @@ run_return:
 
 
 .equ INSTRUCTION_EXIT, 2
-.equ INSTRUCTION_IF, 0
-.equ INSTRUCTION_FOR, 1
+.equ INSTRUCTION_IF, 1
+.equ INSTRUCTION_FOR, 2
 .equ INSTRUCTION_LEFT, 3
 .equ INSTRUCTION_RIGHT, 4
-.equ INSTRUCTION_PLUS, 26
-.equ INSTRUCTION_MINUS, 27
+.equ INSTRUCTION_PLUS, 27
+.equ INSTRUCTION_MINUS, 24
 .equ INSTRUCTION_SET, 28
 .equ INSTRUCTION_MULt, 29
 .equ INSTRUCTION_IN, 30
 .equ INSTRUCTION_OUT, 31
 run_instruction_jmp_table:
-	.quad run_instruction_if		# 0 if xx000 is all if
-	.quad run_instruction_for		# 1 if xx001 is all for
-	.quad run_return				# 2 exit
+	.quad run_return				# 0 exit
+	.quad run_instruction_if		# 1 if xx001 is all if
+	.quad run_instruction_for		# 2 if xx010 is all for
 	.quad run_instruction_left		# 3 left
 	.quad run_instruction_right		# 4 right
 	.quad run_return				# 5
 	.quad run_return				# 6
 	.quad run_return				# 7
-	.quad run_instruction_if		# 8 if xx000 is all if
-	.quad run_instruction_for		# 9 if xx001 is all for
-	.quad run_return				# 10
+	.quad run_return				# 8
+	.quad run_instruction_if		# 9  if xx001 is all if
+	.quad run_instruction_for		# 10 if xx010 is all for
 	.quad run_return				# 11
 	.quad run_return				# 12
 	.quad run_return				# 13
 	.quad run_return				# 14
 	.quad run_return				# 15
-	.quad run_instruction_if		# 16 if xx000 is all if
-	.quad run_instruction_for		# 17 if xx001 is all for
-	.quad run_return				# 18
+	.quad run_return				# 16
+	.quad run_instruction_if		# 17 if xx001 is all if
+	.quad run_instruction_for		# 18 if xx010 is all for
 	.quad run_return				# 19
 	.quad run_return				# 20
 	.quad run_return				# 21
 	.quad run_return				# 22
 	.quad run_return				# 23
-	.quad run_instruction_if		# 24 if xx000 is all if
-	.quad run_instruction_for		# 25 if xx001 is all for
-	.quad run_instruction_plus		# 26 plus
-	.quad run_instruction_minus		# 27 minus
+	.quad run_instruction_minus		# 24 minus
+	.quad run_instruction_if		# 25 if xx000 is all if
+	.quad run_instruction_for		# 26 if xx001 is all for
+	.quad run_instruction_plus		# 27 plus
 	.quad run_instruction_set		# 28 set
 	.quad run_instruction_mult		# 29 mult
 	.quad run_instruction_in		# 30 in
@@ -310,19 +355,27 @@ run_instruction_for:
 	jmp run_loop
 	
 run_instruction_left:
-	decq %r13
+	movzw src(%r12), %rax
+	shrq $OP_CODE_SIZE, %rax
+	subq %rax, %r13
 	jmp run_loop
 	
 run_instruction_right:
-	incq %r13
+	movzw src(%r12), %rax
+	shrq $OP_CODE_SIZE, %rax
+	addq %rax, %r13
 	jmp run_loop
 
 run_instruction_plus:
-	addb $1, runtime_memory(%r13)
+	movzw src(%r12), %rax
+	shrq $OP_CODE_SIZE, %rax
+	addb %al, runtime_memory(%r13)
 	jmp run_loop
 	
 run_instruction_minus:
-	subb $1, runtime_memory(%r13)
+	movzw src(%r12), %rax
+	shrq $OP_CODE_SIZE, %rax
+	subb %al, runtime_memory(%r13)
 	jmp run_loop
 	
 run_instruction_set:
@@ -338,8 +391,8 @@ run_instruction_out:
 	movzb %al, %rdi
 	call putchar
 
-	incq %r14
-	cmpq $1560, %r14
-	je run_return
+	// incq %r14
+	// cmpq $1560, %r14
+	// je run_return
 
 	jmp run_loop

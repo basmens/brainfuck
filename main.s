@@ -18,12 +18,15 @@ usage_format: .asciz "usage: %s <filename>\n"
 main:
 	pushq %rbp
 	movq %rsp, %rbp
-	subq $16, %rsp
+	subq $16, %rsp # Used for file storage
+
+	call main_test
+	jmp main_return
 
 	# Make sure we got one argument.
 	# The first argument is always the name of our program, so we want a second argument.
-	cmp $2, %rdi
-	jne wrong_argc
+	// cmp $2, %rdi
+	// jne wrong_argc
 
 	# Read the file with the brainfuck code.
 	# 8(%rsi) is argv[1], the path of the file we should read.
@@ -37,13 +40,14 @@ main:
 
 	# Now we're calling you.
 	# Good luck.
-	movq %rax, %rdi
+	movq -16(%rbp), %rdi
 	call brainfuck
 
 	# Free the buffer allocated by read_file.
 	movq -16(%rbp), %rdi
 	call free
 
+main_return:
 	# Return success.
 	# Unless of course you made us segfault?
 	mov $0, %rax
