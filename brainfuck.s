@@ -51,16 +51,22 @@
 	incq executed_operations
 .endm
 
-
-# Limit print count, for stats, use 1000
+# Limit print count, use 1000 for stats
 .macro LIMIT_PRINT_COUNT
 	incq %r14
 	cmpq $1000, %r14
 	je run_return
 .endm
 
+.macro GET_TIME
+	movq $228, %rax # clock_gettime
+	movq $0, %rdi
+	movq $compile_time_out, %rsi
+	syscall
+.endm
 
-.equ INSTRUCTION_SIZE, 2 # In bytes
+
+.equ INSTRUCTION_SIZE, 4 # In bytes
 .equ OP_CODE_SIZE, 5 # In bits
 .equ OP_CODE_BIT_MASK, 0x1f
 
@@ -85,8 +91,8 @@ brainfuck:
 	PROLOGUE
 
 	call compile
+	GET_TIME
 	call run
-	movq $0, %rax
 
 	EPILOGUE
 
@@ -180,7 +186,7 @@ compile_jmp_table:
 
 compile_if:
 	pushq %r12
-	movw $INSTRUCTION_IF, intermediate_src(%r12)
+	movl $INSTRUCTION_IF, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
@@ -189,11 +195,11 @@ compile_for:
 
 	movq %r12, %rax # Insert current adress into if instruction
 	shlq $OP_CODE_SIZE, %rax
-	orw %ax, intermediate_src(%rdx)
+	orl %eax, intermediate_src(%rdx)
 
 	shlq $OP_CODE_SIZE, %rdx # Insert if adress into current instruction
-	orq $INSTRUCTION_FOR, %rdx
-	movw %dx, intermediate_src(%r12) # Store instruction
+	orl $INSTRUCTION_FOR, %edx
+	movl %edx, intermediate_src(%r12) # Store instruction
 
 	addq $8, %rsp # Pop if off the stack
 
@@ -201,32 +207,32 @@ compile_for:
 	jmp compile_loop
 
 compile_left:
-	movw $INSTRUCTION_LEFT, intermediate_src(%r12)
+	movl $INSTRUCTION_LEFT, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_right:
-	movw $INSTRUCTION_RIGHT, intermediate_src(%r12)
+	movl $INSTRUCTION_RIGHT, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_plus:
-	movw $INSTRUCTION_PLUS, intermediate_src(%r12)
+	movl $INSTRUCTION_PLUS, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_minus:
-	movw $INSTRUCTION_MINUS, intermediate_src(%r12)
+	movl $INSTRUCTION_MINUS, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_in:
-	movw $INSTRUCTION_IN, intermediate_src(%r12)
+	movl $INSTRUCTION_IN, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_out:
-	movw $INSTRUCTION_OUT, intermediate_src(%r12)
+	movl $INSTRUCTION_OUT, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
@@ -298,25 +304,25 @@ run_instruction_jmp_table:
 run_instruction_if:
 	cmpb $0, runtime_memory(%r13)
 	jne run_loop
-	movzw intermediate_src(%r12), %rax
-	shrq $OP_CODE_SIZE, %rax
-	movq %rax, %r12
+	movl intermediate_src(%r12), %eax
+	shrl $OP_CODE_SIZE, %eax
+	movl %eax, %r12d
 	jmp run_loop
 	
 run_instruction_for:
 	cmpb $0, runtime_memory(%r13)
 	je run_loop
-	movzw intermediate_src(%r12), %rax
-	shrq $OP_CODE_SIZE, %rax
-	movq %rax, %r12
+	movl intermediate_src(%r12), %eax
+	shrl $OP_CODE_SIZE, %eax
+	movl %eax, %r12d
 	jmp run_loop
 	
 run_instruction_left:
-	subq $1, %r13
+	subl $1, %r13d
 	jmp run_loop
-	
+
 run_instruction_right:
-	addq $1, %r13
+	addl $1, %r13d
 	jmp run_loop
 
 run_instruction_plus:
