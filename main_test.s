@@ -18,7 +18,7 @@ time_nanos: .quad 0
 usage_format: .asciz "usage: %s <filename>\n"
 
 # Program name, program size, intermediate src size, executed operations, time in nanos
-program_statistics_format: .asciz "\n\n%s\t%lu\t%lu\t%lu\t%lu\n"
+program_statistics_format: .asciz "\n\n%s;%lu;%lu;%lu;%lu;No optimizations\n"
 
 main_test:
 	pushq %rbp

@@ -131,26 +131,6 @@ compile_loop:
 
 	# Get char
 	movzb (%r14, %r13), %rax
-	
-	// TMP CODE
-	cmpb $0x5b, %al
-	je skip_char_counter
-	cmpb $0x5d, %al
-	je skip_char_counter
-	cmpb $0x2c, %al
-	je skip_char_counter
-	cmpb $0x2e, %al
-	je skip_char_counter
-
-	movq $0, %r15
-	decq %r13
-char_counter_loop:
-	incq %r13
-	incq %r15
-	cmpb 1(%r14, %r13), %al
-	je char_counter_loop
-skip_char_counter:
-	//
 
 	# Jmp into switch statement
 	mulq -40(%rbp)
@@ -200,10 +180,10 @@ compile_for:
 	movq (%rsp), %rdx # Get if adress
 
 	movq %r12, %rax # Insert current adress into if instruction
-	shlq $3, %rax
+	shlq $OP_CODE_SIZE, %rax
 	orw %ax, intermediate_src(%rdx)
 
-	shlq $3, %rdx # Insert if adress into current instruction
+	shlq $OP_CODE_SIZE, %rdx # Insert if adress into current instruction
 	orq $INSTRUCTION_FOR, %rdx
 	movw %dx, intermediate_src(%r12) # Store instruction
 
@@ -214,29 +194,21 @@ compile_for:
 
 compile_left:
 	movw $INSTRUCTION_LEFT, intermediate_src(%r12)
-	shlq $OP_CODE_SIZE, %r15
-	orw %r15w, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_right:
 	movw $INSTRUCTION_RIGHT, intermediate_src(%r12)
-	shlq $OP_CODE_SIZE, %r15
-	orw %r15w, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_plus:
 	movw $INSTRUCTION_PLUS, intermediate_src(%r12)
-	shlq $OP_CODE_SIZE, %r15
-	orw %r15w, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
 compile_minus:
 	movw $INSTRUCTION_MINUS, intermediate_src(%r12)
-	shlq $OP_CODE_SIZE, %r15
-	orw %r15w, intermediate_src(%r12)
 	addq $INSTRUCTION_SIZE, %r12
 	jmp compile_loop
 
@@ -295,56 +267,31 @@ run_return:
 	EPILOGUE
 
 
-.equ INSTRUCTION_EXIT, 2
+.equ INSTRUCTION_EXIT, 0
 .equ INSTRUCTION_IF, 1
 .equ INSTRUCTION_FOR, 2
 .equ INSTRUCTION_LEFT, 3
 .equ INSTRUCTION_RIGHT, 4
-.equ INSTRUCTION_PLUS, 27
-.equ INSTRUCTION_MINUS, 24
-.equ INSTRUCTION_SET, 28
-.equ INSTRUCTION_MULt, 29
-.equ INSTRUCTION_IN, 30
-.equ INSTRUCTION_OUT, 31
+.equ INSTRUCTION_PLUS, 5
+.equ INSTRUCTION_MINUS, 6
+.equ INSTRUCTION_IN, 7
+.equ INSTRUCTION_OUT, 8
 run_instruction_jmp_table:
 	.quad run_return				# 0 exit
-	.quad run_instruction_if		# 1 if xx001 is all if
-	.quad run_instruction_for		# 2 if xx010 is all for
+	.quad run_instruction_if		# 1 if
+	.quad run_instruction_for		# 2 for
 	.quad run_instruction_left		# 3 left
 	.quad run_instruction_right		# 4 right
-	.quad run_return				# 5
-	.quad run_return				# 6
-	.quad run_return				# 7
-	.quad run_return				# 8
-	.quad run_instruction_if		# 9  if xx001 is all if
-	.quad run_instruction_for		# 10 if xx010 is all for
-	.quad run_return				# 11
-	.quad run_return				# 12
-	.quad run_return				# 13
-	.quad run_return				# 14
-	.quad run_return				# 15
-	.quad run_return				# 16
-	.quad run_instruction_if		# 17 if xx001 is all if
-	.quad run_instruction_for		# 18 if xx010 is all for
-	.quad run_return				# 19
-	.quad run_return				# 20
-	.quad run_return				# 21
-	.quad run_return				# 22
-	.quad run_return				# 23
-	.quad run_instruction_minus		# 24 minus
-	.quad run_instruction_if		# 25 if xx000 is all if
-	.quad run_instruction_for		# 26 if xx001 is all for
-	.quad run_instruction_plus		# 27 plus
-	.quad run_instruction_set		# 28 set
-	.quad run_instruction_mult		# 29 mult
-	.quad run_instruction_in		# 30 in
-	.quad run_instruction_out		# 31 out
+	.quad run_instruction_plus		# 5 plus
+	.quad run_instruction_minus		# 6 minus
+	.quad run_instruction_in		# 7 in
+	.quad run_instruction_out		# 8 out
 	
 run_instruction_if:
 	cmpb $0, runtime_memory(%r13)
 	jne run_loop
 	movzw intermediate_src(%r12), %rax
-	shrq $3, %rax
+	shrq $OP_CODE_SIZE, %rax
 	movq %rax, %r12
 	jmp run_loop
 	
@@ -352,36 +299,26 @@ run_instruction_for:
 	cmpb $0, runtime_memory(%r13)
 	je run_loop
 	movzw intermediate_src(%r12), %rax
-	shrq $3, %rax
+	shrq $OP_CODE_SIZE, %rax
 	movq %rax, %r12
 	jmp run_loop
 	
 run_instruction_left:
-	movzw intermediate_src(%r12), %rax
-	shrq $OP_CODE_SIZE, %rax
-	subq %rax, %r13
+	subq $1, %r13
 	jmp run_loop
 	
 run_instruction_right:
-	movzw intermediate_src(%r12), %rax
-	shrq $OP_CODE_SIZE, %rax
-	addq %rax, %r13
+	addq $1, %r13
 	jmp run_loop
 
 run_instruction_plus:
-	movzw intermediate_src(%r12), %rax
-	shrq $OP_CODE_SIZE, %rax
-	addb %al, runtime_memory(%r13)
+	addb $1, runtime_memory(%r13)
 	jmp run_loop
 	
 run_instruction_minus:
-	movzw intermediate_src(%r12), %rax
-	shrq $OP_CODE_SIZE, %rax
-	subb %al, runtime_memory(%r13)
+	subb $1, runtime_memory(%r13)
 	jmp run_loop
 	
-run_instruction_set:
-run_instruction_mult:
 run_instruction_in:
 	call getchar
 	movb %al, runtime_memory(%r13)
