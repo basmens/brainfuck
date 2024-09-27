@@ -37,7 +37,7 @@ compile_time_out:
 usage_format: .asciz "usage: %s <filename>\n"
 
 # Program name, program size, intermediate src size, executed operations, time in nanos
-program_statistics_format: .asciz "\n\n%s;%lu;%lu;%lu;%lu;%lu;Merge same operations\n"
+program_statistics_format: .asciz "\n\nReorder move instrucions;%s;%lu;%lu;%lu;%lu;%lu\n"
 
 main_test:
 	pushq %rbp
