@@ -159,11 +159,11 @@ test_once:
 
 	# Save time runner
 	movq -32(%rbp), %rax # Move end stamp seconds into %rax
-	subq -16(%rbp), %rax # Subtract begin stamp seconds from %rax
+	subq compile_time_out, %rax # Subtract begin stamp seconds from %rax
 	movq $1000000000, %rdx # Multiply by 1e9
 	mulq %rdx
 	addq -24(%rbp), %rax # Add end stamp nanos to %rax
-	subq -8(%rbp), %rax # Subtract begin stamp nanon from %rax
+	subq compile_time_out + 8, %rax # Subtract begin stamp nanon from %rax
 	addq %rax, time_nanos_runner # Save into memory
 
 	# Reset brainfuck memory
