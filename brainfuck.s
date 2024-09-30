@@ -57,9 +57,9 @@
 
 # Limit print count, use 1000 for stats
 .macro LIMIT_PRINT_COUNT
-	incq %r14
-	cmpq $1000, %r14
-	je run_return
+	// incq %r14
+	// cmpq $1000, %r14
+	// je run_return
 .endm
 
 
@@ -110,8 +110,8 @@ compile:
 		The compiler will have a two quads pushed onto the stack for every bracket frame. So, when entering a [, a two quads will
 		be pushed, and when ], will be exited, a two quads will be popped.
 
-		The first quad contains 4 bytes for the address of the [ and 4 byte for the total mem pointer movement.
-		The second quad 1 byte for the last operation, then 4 byte for the location of that operation.
+		// The first quad contains 4 bytes for the address of the [ and 4 byte for the total mem pointer movement.
+		// The second quad 1 byte for the last operation, then 4 byte for the location of that operation.
 	*/
 
 	/* bit representation in ascii of the 8 instructions
@@ -201,16 +201,10 @@ compile_jmp_table:
 	.quad compile_return	# 13
 	.quad compile_loop		# 14, new line
 
-/*
-	Compiles brainfuck program into 2 byte instructions. Each instruction contains a the instruction itself
-	in the 5 least significant bits. Then 11 bits are reserved for parameters.
-*/
-
 
 .macro write_instruction name
 	movb $OP_CODE_\name, intermediate_src(%r12) # Write op code
 	addq $INSTRUCTION_SIZE_\name, %r12 # Increment intermediate src pointer by length
-	movb $OP_CODE_\name, (%rsp) # Write last operation to bracket frame
 .endm
 
 
@@ -261,8 +255,7 @@ compile_right:
 	addl %r15d, 12(%rsp) # Increment memory pointer offset in bracket frame
 	jmp compile_loop
 
-.equ INSTRUCTION_SIZE_PLUS, 2
-.equ INSTRUCTION_SIZE_PLUS_BLOCK, 5
+.equ INSTRUCTION_SIZE_PLUS, 6
 /*
 	Plus start with an op code, then 1 byte for the length, and then blocks of 3 representing all the plus
 	instructions, each 1 byte for the ammount to add, and then 2 bytes for the offset within memory.
@@ -271,24 +264,12 @@ compile_right:
 compile_minus:
 	negb %r15b # Invert ammount to subtract, now ammount to add
 compile_plus:
-	# Check if plus instruction has already been initialized
-	cmpb $OP_CODE_PLUS, (%rsp) # Check if last operation is plus
-	je compile_plus_skip_init # If so, skip init
-
 	# Init plus instruction
-	movb $0, 1 + intermediate_src(%r12) # Write length of 0
-	movl %r12d, 1(%rsp) # Write address of add insctruction
+	movb %r15b, 1 + intermediate_src(%r12) # Write ammount to add
+	movl 12(%rsp), %eax # Write offset from memory pointer
+	movl %eax, 2 + intermediate_src(%r12)
 	write_instruction PLUS
 
-compile_plus_skip_init:
-	# Add add block
-	movl 1(%rsp), %eax # Get address of add instruction
-	incb 1 + intermediate_src(%eax) # Increment add block count
-	movb %r15b, intermediate_src(%r12) # Write ammount to add
-	movl 12(%rsp), %eax # Write offset from memory pointer
-	movl %eax, 1 + intermediate_src(%r12)
-
-	addq $INSTRUCTION_SIZE_PLUS_BLOCK, %r12 # Increment intermediate src pointer by add block size
 	jmp compile_loop
 
 
@@ -324,19 +305,20 @@ run:
 	push %r13 # -16 Becomes memory pointer
 	push %r14 # -24 Becomes output counter
 	push %r15 # -32
+	# %rax is used as instruction register
 
 	# Init intermediate_src counter, memory pointer and output counter to 0
 	movq $0, %r12
 	movq $0, %r13
 	movq $0, %r14
-	movq $intermediate_src, %r15
 run_loop:
 	INCR_EXECUTED_OPERATIONS_STAT # Comment out above
 
 	# Jump into instruction table
-	movzb intermediate_src(%r12), %rax # Get instruction
-	shlq $3, %rax # Multiply by 8
-	jmp *run_instruction_jmp_table(%rax) # Index into the table
+	movq intermediate_src(%r12), %rax # Get instruction
+	movzb %al, %rdx # Read op code
+	shlq $3, %rdx # Multiply by 8
+	jmp *run_instruction_jmp_table(%rdx) # Index into the table
 
 run_return:
 	# Restore %r12-15
@@ -395,7 +377,8 @@ run_instruction_if:
 	cmpb $0, runtime_memory(%r13) # Check if it needs to jump
 	jne run_loop # No jump, just continue with next instruction
 
-	movl intermediate_src - INSTRUCTION_SIZE_IF + 1(%r12), %r12d # Jump to instruction after if
+	shrq $8, %rax # Get jump address
+	movl %eax, %r12d # Jump to instruction after if
 	jmp run_loop
 	
 run_instruction_for:
@@ -403,39 +386,35 @@ run_instruction_for:
 	cmpb $0, runtime_memory(%r13) # Check if it needs to jump
 	je run_loop # No jump, just continue with next instruction
 
-	movl intermediate_src - INSTRUCTION_SIZE_FOR + 1(%r12), %r12d # Jump to instruction after for
+	shrq $8, %rax # Get jump address
+	movl %eax, %r12d # Jump to instruction after for
 	jmp run_loop
 	
 run_instruction_right:
-	addl 1 + intermediate_src(%r12), %r13d # Get ammount to move and add to memory pointer
+	shrq $8, %rax # Get ammount to move
+	addl %eax, %r13d # Get ammount to move and add to memory pointer
 	addl $INSTRUCTION_SIZE_RIGHT, %r12d # Increment intermediate src pointer
 	jmp run_loop
 
 run_instruction_plus:
-	movzb 1 + intermediate_src(%r12), %rcx # Get ammount of add blocks
-	addq $INSTRUCTION_SIZE_PLUS, %r12 # Move to first add block
-run_instruction_plus_loop:
-	movb intermediate_src(%r12), %al # Get ammount to add
-	movl 1 + intermediate_src(%r12), %edx # Get offset from memory pointer
-	addb %al, runtime_memory(%r13d, %edx) # Add
-	addq $INSTRUCTION_SIZE_PLUS_BLOCK, %r12 # Increment by one add block
-	loop run_instruction_plus_loop # Loop to next add block
-
+	movb %ah, %dl # Keep ammount to add
+	shrq $16, %rax # Get memory pointer offset
+	addb %dl, runtime_memory(%r13d, %eax) # Add
+	addq $INSTRUCTION_SIZE_PLUS, %r12 # Increment intermediate src pointer
 	jmp run_loop
 	
 run_instruction_set:
 run_instruction_mult:
 run_instruction_in:
 	call getchar
-	movl 1 + intermediate_src(%r12), %edx # Get offset from memory pointer
+	movl 1 + intermediate_src(%r12), %edx # Get memory pointer offset
 	movb %al, runtime_memory(%r13d, %edx) # Store input into memory
 	addq $INSTRUCTION_SIZE_IN, %r12 # Increment intermediate src pointer
 	jmp run_loop
 
 run_instruction_out:
-	movq $0, %rax
-	movl 1 + intermediate_src(%r12), %edx # Get offset from memory pointer
-	movzb runtime_memory(%r13d, %edx), %rdi # Ouput from memory
+	shrq $8, %rax # Get memory pointer offset
+	movzb runtime_memory(%r13d, %eax), %rdi # Ouput from memory
 	addq $INSTRUCTION_SIZE_OUT, %r12 # Increment intermediate src pointer
 	call putchar
 
