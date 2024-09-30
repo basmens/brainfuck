@@ -57,9 +57,9 @@
 
 # Limit print count, use 1000 for stats
 .macro LIMIT_PRINT_COUNT
-	// incq %r14
-	// cmpq $1000, %r14
-	// je run_return
+	incq %r14
+	cmpq $1000, %r14
+	je run_return
 .endm
 
 
@@ -110,8 +110,8 @@ compile:
 		The compiler will have a two quads pushed onto the stack for every bracket frame. So, when entering a [, a two quads will
 		be pushed, and when ], will be exited, a two quads will be popped.
 
-		// The first quad contains 4 bytes for the address of the [ and 4 byte for the total mem pointer movement.
-		// The second quad 1 byte for the last operation, then 4 byte for the location of that operation.
+		The first quad contains 4 bytes for the address of the [ and 4 byte for the total mem pointer movement.
+		The second quad 1 byte containing the flags for possible loop optimizations.
 	*/
 
 	/* bit representation in ascii of the 8 instructions
@@ -135,7 +135,7 @@ compile:
 	movq $3505308283979744561L, %rax
 	pushq %rax # -40 Magic number
 	pushq $0 # Push first stack frame
-	pushq $0
+	pushq $3
 
 	# Move intermediate_src counter to 0, set loop counter to -1 and program string into %r14
 	movq $0, %r12
@@ -221,19 +221,50 @@ compile_jmp_table:
 .endm
 
 
-
+.equ LOOP_OPPTIMIZATION_SET_ZERO, 1
+.equ LOOP_OPPTIMIZATION_MULT, 2
+.equ LOOP_OPPTIMIZATION_SCAN_MEMORY, 4
 .equ INSTRUCTION_SIZE_IF, 5
 compile_if:
 	compile_pop_mem_movement
 
 	pushq %r12 # Push new empty bracket frame
-	pushq $0
+	pushq $3
 	write_instruction IF
 
 	jmp compile_loop
 
 .equ INSTRUCTION_SIZE_FOR, 5
+.equ INSTRUCTION_SIZE_SET_ZERO, 5
 compile_for:
+	movb (%rsp), %al # Get loop optimization flags from bracket frame
+	movb %al, %ah # Both al and ah contain the flags, al is used to check, ah for quick access
+	andb $LOOP_OPPTIMIZATION_SET_ZERO, %al # Isolate set zero flag
+	cmpb $0, %al # If set zero flag is not set, skip optimize loop
+	je check_loop_optimization_mult
+
+	# If we get here, that means that the loop contains only one plus instruction. So we skip 
+	# INSTRUCTION_SIZE_IF + INSTRUCTION_SIZE_PLUS bytes back and insert a set zero instruction.
+	addq $16, %rsp # Pop bracket frame
+	subq $INSTRUCTION_SIZE_IF + INSTRUCTION_SIZE_PLUS, %r12 # Move intermediate src pointer back
+	movl 12(%rsp), %eax # Write offset from memory pointer
+	movl %eax, 1 + intermediate_src(%r12)
+	write_instruction SET_ZERO
+	jmp compile_loop
+
+check_loop_optimization_mult:
+	movb %ah, %al # Copy flags to al
+	andb $LOOP_OPPTIMIZATION_MULT, %al # Isolate mult flag
+	cmpb $0, %al # If mult flag is not set, skip optimize loop
+	je check_loop_optimization_scan_memory
+
+check_loop_optimization_scan_memory:
+	movb %ah, %al # Copy flags to al
+	andb $LOOP_OPPTIMIZATION_SCAN_MEMORY, %al # Isolate scan memory flag
+	cmpb $0, %al # If scan memory flag is not set, skip optimize loop
+	je compile_for_no_optimizations
+
+compile_for_no_optimizations:
 	compile_pop_mem_movement
 
 	movl 8(%rsp), %edx # Get address of if instruction
@@ -249,10 +280,12 @@ compile_for:
 
 compile_left:
 	subl %r15d, 12(%rsp) # Decrement memory pointer offset in bracket frame
+	andb $(~LOOP_OPPTIMIZATION_SET_ZERO), (%rsp) # Not a set zero loop
 	jmp compile_loop
 
 compile_right:
 	addl %r15d, 12(%rsp) # Increment memory pointer offset in bracket frame
+	andb $(~LOOP_OPPTIMIZATION_SET_ZERO), (%rsp) # Not a set zero loop
 	jmp compile_loop
 
 .equ INSTRUCTION_SIZE_PLUS, 6
@@ -269,6 +302,8 @@ compile_plus:
 	movl 12(%rsp), %eax # Write offset from memory pointer
 	movl %eax, 2 + intermediate_src(%r12)
 	write_instruction PLUS
+	
+	andb $(~LOOP_OPPTIMIZATION_SCAN_MEMORY), (%rsp) # Not a scan memory loop
 
 	jmp compile_loop
 
@@ -278,6 +313,7 @@ compile_in:
 	movl 12(%rsp), %eax # Write offset from memory pointer
 	movl %eax, 1 + intermediate_src(%r12)
 	write_instruction IN
+	andb $0, (%rsp) # No loop optimizations possible
 	jmp compile_loop
 
 .equ INSTRUCTION_SIZE_OUT, 5
@@ -285,6 +321,7 @@ compile_out:
 	movl 12(%rsp), %eax # Write offset from memory pointer
 	movl %eax, 1 + intermediate_src(%r12)
 	write_instruction OUT
+	andb $0, (%rsp) # No loop optimizations possible
 	jmp compile_loop
 
 
@@ -334,7 +371,7 @@ run_return:
 .equ OP_CODE_FOR, 2
 .equ OP_CODE_RIGHT, 3
 .equ OP_CODE_PLUS, 27
-.equ OP_CODE_SET, 28
+.equ OP_CODE_SET_ZERO, 28
 .equ OP_CODE_MULt, 29
 .equ OP_CODE_IN, 30
 .equ OP_CODE_OUT, 31
@@ -367,7 +404,7 @@ run_instruction_jmp_table:
 	.quad run_return				# 25
 	.quad run_return				# 26
 	.quad run_instruction_plus		# 27 plus
-	.quad run_instruction_set		# 28 set
+	.quad run_instruction_set_zero	# 28 set
 	.quad run_instruction_mult		# 29 mult
 	.quad run_instruction_in		# 30 in
 	.quad run_instruction_out		# 31 out
@@ -403,7 +440,12 @@ run_instruction_plus:
 	addq $INSTRUCTION_SIZE_PLUS, %r12 # Increment intermediate src pointer
 	jmp run_loop
 	
-run_instruction_set:
+run_instruction_set_zero:
+	shrq $8, %rax # Get memory pointer offset
+	movb $0, runtime_memory(%r13d, %eax) # Set to 0
+	addq $INSTRUCTION_SIZE_SET_ZERO, %r12 # Increment intermediate src pointer
+	jmp run_loop
+
 run_instruction_mult:
 run_instruction_in:
 	call getchar
