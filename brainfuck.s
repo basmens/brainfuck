@@ -73,7 +73,7 @@
 
 
 .data
-intermediate_src: .skip 2048, 0
+intermediate_src: .skip 65536, 0
 runtime_memory: .skip 30000, 0
 
 .text
