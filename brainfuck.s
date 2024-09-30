@@ -57,9 +57,9 @@
 
 # Limit print count, use 1000 for stats
 .macro LIMIT_PRINT_COUNT
-	incq %r14
-	cmpq $1000, %r14
-	je run_return
+	// incq %r14
+	// cmpq $1000, %r14
+	// je run_return
 .endm
 
 
@@ -79,8 +79,18 @@ runtime_memory: .skip 30000, 0
 	Description:
 		Compiles and runs the string of code
 */
+format_src: .asciz "%lu\n"
 brainfuck:
 	PROLOGUE
+
+	// pushq %rdi
+	// pushq %rdi
+	// movq $0, %rax
+	// movq $format_src, %rdi
+	// movq $intermediate_src, %rsi
+	// call printf
+	// popq %rdi
+	// popq %rdi
 
 	call compile
 	GET_TIME
@@ -207,6 +217,17 @@ compile_jmp_table:
 	addq $INSTRUCTION_SIZE_\name, %r12 # Increment intermediate src pointer by length
 .endm
 
+.macro write_instruction_long name address
+	movl \address, 1 + intermediate_src(%r12) # Insert address into instruction
+	write_instruction \name
+.endm
+
+.macro write_instruction_byte_long name amount address
+	movb \amount, 1 + intermediate_src(%r12) # Insert amount into instruction
+	movl \address, 2 + intermediate_src(%r12) # Insert address into instruction
+	write_instruction \name
+.endm
+
 
 .equ INSTRUCTION_SIZE_RIGHT, 5
 .macro compile_pop_mem_movement
@@ -220,6 +241,18 @@ compile_jmp_table:
 1:
 .endm
 
+.macro remove_move_instruction_via_r8 src_pointer
+	# Check if there is a move instruction the if to remove
+	movq intermediate_src - INSTRUCTION_SIZE_RIGHT(\src_pointer), %r8 # Get instruction before if
+	cmpb $OP_CODE_RIGHT, %r8b # Check if instruction is move instruction
+	jne 1f
+
+	# Remove move instruction
+	shrq $8, %r8 # Get move amount
+	addl %r8d, 12(%rsp) # Increment memory pointer offset by move amount
+	subl $INSTRUCTION_SIZE_RIGHT, \src_pointer # Move given src pointer back
+1:
+.endm
 
 .equ LOOP_OPPTIMIZATION_SET_ZERO, 1
 .equ LOOP_OPPTIMIZATION_MULT, 2
@@ -229,13 +262,17 @@ compile_if:
 	compile_pop_mem_movement
 
 	pushq %r12 # Push new empty bracket frame
-	pushq $3
+	pushq $7
 	write_instruction IF
 
 	jmp compile_loop
 
 .equ INSTRUCTION_SIZE_FOR, 5
 .equ INSTRUCTION_SIZE_SET_ZERO, 5
+# Multiplication first loads the amount the addition is repeated into a dedicated register, 
+# then adds the mult factor * this repetition amount to the memory at the memory pointer offset.
+.equ INSTRUCTION_SIZE_INIT_MULT, 6 # 1 byte for op code, 1 byte for the source add count, 4 bytes for memory pointer offset for the source
+.equ INSTRUCTION_SIZE_MULT_ADD, 6 # 1 byte for op code, 1 byte for the mult factor, 4 bytes for memory pointer offset for the destination
 compile_for:
 	movb (%rsp), %al # Get loop optimization flags from bracket frame
 	movb %al, %ah # Both al and ah contain the flags, al is used to check, ah for quick access
@@ -247,9 +284,11 @@ compile_for:
 	# INSTRUCTION_SIZE_IF + INSTRUCTION_SIZE_PLUS bytes back and insert a set zero instruction.
 	addq $16, %rsp # Pop bracket frame
 	subq $INSTRUCTION_SIZE_IF + INSTRUCTION_SIZE_PLUS, %r12 # Move intermediate src pointer back
+	remove_move_instruction_via_r8 %r12d # Remove move instruction using %r12d as the src pointer
+
 	movl 12(%rsp), %eax # Write offset from memory pointer
-	movl %eax, 1 + intermediate_src(%r12)
-	write_instruction SET_ZERO
+	write_instruction_long SET_ZERO %eax
+	andb $0, (%rsp) # No loop optimizations possible
 	jmp compile_loop
 
 check_loop_optimization_mult:
@@ -257,6 +296,76 @@ check_loop_optimization_mult:
 	andb $LOOP_OPPTIMIZATION_MULT, %al # Isolate mult flag
 	cmpb $0, %al # If mult flag is not set, skip optimize loop
 	je check_loop_optimization_scan_memory
+
+	# Check if the total memory movement is 0, if so, skip optimize loop.
+	cmpl $0, 12(%rsp)
+	jne check_loop_optimization_scan_memory
+
+	/*
+		If we got here, that means the loop contains only plus instructions and the net total memory movement is not 0.
+		In other words, this loop executes a multiplication(s). First we check if we need to remove a move before the if. 
+		Then we move to the start of the loop, next we check the memory pointer offset of each plus instruction. 
+		If the offset is 0, we found a source add instruction and keep track of it. If the offset is not 0, 
+		we found a destination and overwrite the instruction we just read with a mult instruction. %rax will contain the 
+		location of the if instruction, and keep it. %rcx will contain the instruction after the if and will increment 
+		to read the plus instructins. %12 will start of INSTRUCTION_SIZE_INIT_MULT away from the if statement to keep room 
+		for the init instruction, and then write the mult instructions. %rdx will contain the location of the for instruction 
+		to keep track of the end of the loop. Finally, %r11 will store the memory pointer offset originating form the parent 
+		bracket frame and %r8 will keep track of the source add count.
+	*/
+
+	# Assignments before the move check
+	movl 8(%rsp), %eax # Get address of if instruction, %rax will keep it
+	movl %eax, %ecx # Copy %rax to %rcx, %rcx will increment to read the plus instructins
+	addl $INSTRUCTION_SIZE_IF, %ecx # Move %rcx by INSTRUCTION_SIZE_IF
+	addq $16, %rsp # Pop bracket frame
+
+	# Reemove move instruction using %eax as the src pointer
+	remove_move_instruction_via_r8 %eax
+
+optimize_mult_loop_skip_remove_right_move:
+	# Assignments after the move check
+	movl %r12d, %edx # Copy %r12 to %rdx, %rdx will keep track of the end of the loop
+	movl %eax, %r12d # Move intermediate src pointer to instruction after if
+	addl $INSTRUCTION_SIZE_INIT_MULT, %r12d # Move %r12 by INSTRUCTION_SIZE_INIT_MULT
+	movl 12(%rsp), %r11d # Write offset from memory pointer
+	movl $0, %r8d # Set source add count to 0
+optimize_mult_loop_loop:
+	# Read plus instruction
+	movq 1 + intermediate_src(%ecx), %r9 # Read plus instruction payload into %r9, %r9 will contain the amount
+	movq %r9, %r10 # Copy %r9 to %r10, %r10 will contain the memory pointer offset
+	shr $8, %r10 # Get memory pointer offset
+
+	# Check if the memory pointer offset of plus instruction is 0
+	cmpl $0, %r10d # If memory pointer offset is 0, it is a source add instruction
+	jne optimize_mult_loop_not_source_add
+
+	# Read the source add count
+	addb %r9b, %r8b # Add source add count to source add count
+	jmp optimize_mult_loop_loop_end_condition
+
+optimize_mult_loop_not_source_add:
+	# Write mult instruction
+	addl %r11d, %r10d # Add memory pointer offset of bracket frame to this memory pointer offset
+	write_instruction_byte_long MULT_ADD %r9b %r10d
+	jmp optimize_mult_loop_loop_end_condition
+
+optimize_mult_loop_loop_end_condition:
+	# End condition
+	addl $INSTRUCTION_SIZE_PLUS, %ecx # Increment %rcx by INSTRUCTION_SIZE_PLUS
+	cmpl %ecx, %edx # If we haven't reached the if instruction, keep looping
+	jne optimize_mult_loop_loop
+
+	# Write init mult instruction
+	movb $OP_CODE_INIT_MULT, intermediate_src(%eax) # Write op code to instruction
+	movb %r8b, 1 + intermediate_src(%eax) # Write source add count to instruction
+	movl %r11d, 2 + intermediate_src(%eax)
+
+	# Write set zero instruction
+	write_instruction_long SET_ZERO %r11d
+	andb $0, (%rsp) # No loop optimizations possible
+	jmp compile_loop
+
 
 check_loop_optimization_scan_memory:
 	movb %ah, %al # Copy flags to al
@@ -276,6 +385,7 @@ compile_for_no_optimizations:
 	movl %r12d, 1 + intermediate_src - INSTRUCTION_SIZE_IF(%edx) # Insert address after for into if instruction, 1 byte next to if instruction address
 	movl %edx, 1 + intermediate_src - INSTRUCTION_SIZE_FOR(%r12) # Insert address after if instruction into current instruction
 
+	andb $0, (%rsp) # No loop optimizations possible
 	jmp compile_loop
 
 compile_left:
@@ -291,17 +401,15 @@ compile_right:
 .equ INSTRUCTION_SIZE_PLUS, 6
 /*
 	Plus start with an op code, then 1 byte for the length, and then blocks of 3 representing all the plus
-	instructions, each 1 byte for the ammount to add, and then 2 bytes for the offset within memory.
-	Minus instruction are just plus instructions, just with a negative ammount to add.
+	instructions, each 1 byte for the amount to add, and then 2 bytes for the offset within memory.
+	Minus instruction are just plus instructions, just with a negative amount to add.
 */
 compile_minus:
-	negb %r15b # Invert ammount to subtract, now ammount to add
+	negb %r15b # Invert amount to subtract, now amount to add
 compile_plus:
 	# Init plus instruction
-	movb %r15b, 1 + intermediate_src(%r12) # Write ammount to add
-	movl 12(%rsp), %eax # Write offset from memory pointer
-	movl %eax, 2 + intermediate_src(%r12)
-	write_instruction PLUS
+	movl 12(%rsp), %eax # Get offset from memory pointer
+	write_instruction_byte_long PLUS %r15b %eax
 	
 	andb $(~LOOP_OPPTIMIZATION_SCAN_MEMORY), (%rsp) # Not a scan memory loop
 
@@ -310,17 +418,15 @@ compile_plus:
 
 .equ INSTRUCTION_SIZE_IN, 5
 compile_in:
-	movl 12(%rsp), %eax # Write offset from memory pointer
-	movl %eax, 1 + intermediate_src(%r12)
-	write_instruction IN
+	movl 12(%rsp), %eax # Get offset from memory pointer
+	write_instruction_long IN %eax
 	andb $0, (%rsp) # No loop optimizations possible
 	jmp compile_loop
 
 .equ INSTRUCTION_SIZE_OUT, 5
 compile_out:
-	movl 12(%rsp), %eax # Write offset from memory pointer
-	movl %eax, 1 + intermediate_src(%r12)
-	write_instruction OUT
+	movl 12(%rsp), %eax # Get offset from memory pointer
+	write_instruction_long OUT %eax
 	andb $0, (%rsp) # No loop optimizations possible
 	jmp compile_loop
 
@@ -341,8 +447,8 @@ run:
 	push %r12 # -8  Becomes intermediate_src counter
 	push %r13 # -16 Becomes memory pointer
 	push %r14 # -24 Becomes output counter
-	push %r15 # -32
-	# %rax is used as instruction register
+	push %r15 # -32 Becomes variable register for some instructions
+	# %rcx is used as instruction register
 
 	# Init intermediate_src counter, memory pointer and output counter to 0
 	movq $0, %r12
@@ -352,8 +458,8 @@ run_loop:
 	INCR_EXECUTED_OPERATIONS_STAT # Comment out above
 
 	# Jump into instruction table
-	movq intermediate_src(%r12), %rax # Get instruction
-	movzb %al, %rdx # Read op code
+	movq intermediate_src(%r12), %rcx # Get instruction
+	movzb %cl, %rdx # Read op code
 	shlq $3, %rdx # Multiply by 8
 	jmp *run_instruction_jmp_table(%rdx) # Index into the table
 
@@ -370,9 +476,10 @@ run_return:
 .equ OP_CODE_IF, 1
 .equ OP_CODE_FOR, 2
 .equ OP_CODE_RIGHT, 3
+.equ OP_CODE_INIT_MULT, 26
 .equ OP_CODE_PLUS, 27
 .equ OP_CODE_SET_ZERO, 28
-.equ OP_CODE_MULt, 29
+.equ OP_CODE_MULT_ADD, 29
 .equ OP_CODE_IN, 30
 .equ OP_CODE_OUT, 31
 run_instruction_jmp_table:
@@ -402,10 +509,10 @@ run_instruction_jmp_table:
 	.quad run_return				# 23
 	.quad run_return				# 24
 	.quad run_return				# 25
-	.quad run_return				# 26
+	.quad run_instruction_init_mult # 26 init mult
 	.quad run_instruction_plus		# 27 plus
 	.quad run_instruction_set_zero	# 28 set
-	.quad run_instruction_mult		# 29 mult
+	.quad run_instruction_mult_add	# 29 mult add
 	.quad run_instruction_in		# 30 in
 	.quad run_instruction_out		# 31 out
 	
@@ -414,8 +521,8 @@ run_instruction_if:
 	cmpb $0, runtime_memory(%r13) # Check if it needs to jump
 	jne run_loop # No jump, just continue with next instruction
 
-	shrq $8, %rax # Get jump address
-	movl %eax, %r12d # Jump to instruction after if
+	shrq $8, %rcx # Get jump address
+	movl %ecx, %r12d # Jump to instruction after if
 	jmp run_loop
 	
 run_instruction_for:
@@ -423,40 +530,99 @@ run_instruction_for:
 	cmpb $0, runtime_memory(%r13) # Check if it needs to jump
 	je run_loop # No jump, just continue with next instruction
 
-	shrq $8, %rax # Get jump address
-	movl %eax, %r12d # Jump to instruction after for
+	shrq $8, %rcx # Get jump address
+	movl %ecx, %r12d # Jump to instruction after for
 	jmp run_loop
 	
 run_instruction_right:
-	shrq $8, %rax # Get ammount to move
-	addl %eax, %r13d # Get ammount to move and add to memory pointer
+	shrq $8, %rcx # Get ammount to move
+	addl %ecx, %r13d # Get ammount to move and add to memory pointer
 	addl $INSTRUCTION_SIZE_RIGHT, %r12d # Increment intermediate src pointer
 	jmp run_loop
 
 run_instruction_plus:
-	movb %ah, %dl # Keep ammount to add
-	shrq $16, %rax # Get memory pointer offset
-	addb %dl, runtime_memory(%r13d, %eax) # Add
+	movb %ch, %al # Keep ammount to add
+	shrq $16, %rcx # Get memory pointer offset
+	addb %al, runtime_memory(%r13d, %ecx) # Add
 	addq $INSTRUCTION_SIZE_PLUS, %r12 # Increment intermediate src pointer
 	jmp run_loop
 	
 run_instruction_set_zero:
-	shrq $8, %rax # Get memory pointer offset
-	movb $0, runtime_memory(%r13d, %eax) # Set to 0
+	shrq $8, %rcx # Get memory pointer offset
+	movb $0, runtime_memory(%r13d, %ecx) # Set to 0
 	addq $INSTRUCTION_SIZE_SET_ZERO, %r12 # Increment intermediate src pointer
 	jmp run_loop
 
-run_instruction_mult:
+run_instruction_init_mult:
+	addq $INSTRUCTION_SIZE_INIT_MULT, %r12 # Increment intermediate src pointer
+	cmpb $-1, %ch # Check if add count is 1, then repetition count is x
+	jne init_mult_check_one
+
+	shrq $16, %rcx # Get memory pointer offset
+	movb runtime_memory(%r13d, %ecx), %r15b # Save repetition count
+	jmp run_loop
+
+init_mult_check_one:
+	cmpb $1, %ch # Check if add count is 1, then repetition count is 256 - x
+	jne init_mult_non_standard_case
+
+	shrq $16, %rcx # Get memory pointer offset
+	movb runtime_memory(%r13d, %ecx), %r15b # Save repetition count
+	negb %r15b # Do 256 - x
+	jmp run_loop
+
+init_mult_non_standard_case:
+	movq $0, %r15 # Reset repetition count
+	movq %rcx, %rax # Get memory pointer offset
+	shrq $16, %rax
+	movzb runtime_memory(%r13d, %eax), %rax # Get memory input
+
+	cmpb $0, %ah # Check if add count is positive or negative
+	jg init_mult_non_standard_case_positive
+
+	# Case negative, negate add count
+	negb %ch # Negate add count
+	jmp init_mult_non_standard_case_loop
+
+init_mult_non_standard_case_positive:
+	# Case positive, negate input
+	negb %al # Negate input
+
+init_mult_non_standard_case_loop:
+	# Divide input by add count
+	movb $0, %ah # Clear ah
+	divb %ch # Divide by add count
+	addb %al, %r15b # Add result to repetition count
+
+	# End condition
+	cmpb $0, %ah # Check if remainder is 0
+	je run_loop
+
+	# There is a remainder, so wrap it around and divide again
+	movb %ah, %al # Move remainder into al
+	subb %ch, %al # Subtract add count
+	incb %r15b # Add 1 to repetition count
+	jmp init_mult_non_standard_case_loop
+
+run_instruction_mult_add:
+	movb %ch, %al # Move multiplier into mult register
+	mulb %r15b # Multiply by repetition count
+	shrq $16, %rcx # Get memory pointer offset
+	addb %al, runtime_memory(%r13d, %ecx) # Add
+	addq $INSTRUCTION_SIZE_MULT_ADD, %r12 # Increment intermediate src pointer
+	jmp run_loop
+
 run_instruction_in:
+	movq %rcx, %r15 # Save input
 	call getchar
-	movl 1 + intermediate_src(%r12), %edx # Get memory pointer offset
-	movb %al, runtime_memory(%r13d, %edx) # Store input into memory
+	shrq $8, %r15 # Get memory pointer offset
+	movb %al, runtime_memory(%r13d, %r15d) # Store input into memory
 	addq $INSTRUCTION_SIZE_IN, %r12 # Increment intermediate src pointer
 	jmp run_loop
 
 run_instruction_out:
-	shrq $8, %rax # Get memory pointer offset
-	movzb runtime_memory(%r13d, %eax), %rdi # Ouput from memory
+	shrq $8, %rcx # Get memory pointer offset
+	movzb runtime_memory(%r13d, %ecx), %rdi # Ouput from memory
 	addq $INSTRUCTION_SIZE_OUT, %r12 # Increment intermediate src pointer
 	call putchar
 
