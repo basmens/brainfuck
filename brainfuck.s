@@ -54,6 +54,118 @@
 	syscall
 .endm
 
+# Comment out here to switch on/off decompiling
+.macro DECOMPILER
+	jmp decomile_intermediate_src
+.endm
+
+decompile_instruction_table:
+	.ascii "e"	# 0 exit
+	.byte 0
+	.ascii "["	# 1 if
+	.byte INSTRUCTION_SIZE_IF
+	.ascii "]"	# 2 for
+	.byte INSTRUCTION_SIZE_FOR
+	.ascii ">"	# 3 right
+	.byte INSTRUCTION_SIZE_RIGHT
+	.ascii "e"	# 4
+	.byte 0
+	.ascii "e"	# 5
+	.byte 0
+	.ascii "e"	# 6
+	.byte 0
+	.ascii "e"	# 7
+	.byte 0
+	.ascii "e"	# 8
+	.byte 0
+	.ascii "e"	# 9
+	.byte 0
+	.ascii "e"	# 10
+	.byte 0
+	.ascii "e"	# 11
+	.byte 0
+	.ascii "e"	# 12
+	.byte 0
+	.ascii "e"	# 13
+	.byte 0
+	.ascii "e"	# 14
+	.byte 0
+	.ascii "e"	# 15
+	.byte 0
+	.ascii "e"	# 16
+	.byte 0
+	.ascii "e"	# 17
+	.byte 0
+	.ascii "e"	# 18
+	.byte 0
+	.ascii "e"	# 19
+	.byte 0
+	.ascii "e"	# 20
+	.byte 0
+	.ascii "e"	# 21
+	.byte 0
+	.ascii "e"	# 22
+	.byte 0
+	.ascii "e"	# 23
+	.byte 0
+	.ascii "e"	# 24
+	.byte 0
+	.ascii "e"	# 25
+	.byte 0
+	.ascii "i"	# 26 init mult
+	.byte INSTRUCTION_SIZE_INIT_MULT
+	.ascii "+"	# 27 plus
+	.byte INSTRUCTION_SIZE_PLUS
+	.ascii "0"	# 28 set zero
+	.byte INSTRUCTION_SIZE_SET_ZERO
+	.ascii "*"	# 29 mult add
+	.byte INSTRUCTION_SIZE_MULT_ADD
+	.ascii ","	# 30 in
+	.byte INSTRUCTION_SIZE_IN
+	.ascii "."	# 31 out
+	.byte INSTRUCTION_SIZE_OUT
+
+write_file_mode: .asciz "w"
+write_file_name: .asciz "stats/intermediate_src.txt"
+decomile_intermediate_src:
+	# Align stack by popping magic number
+	addq  $8, %rsp
+
+	# Open file
+	movq $write_file_name, %rdi
+	movq $write_file_mode, %rsi
+	call fopen
+	movq %rax, %r13
+
+	# Write file loop
+	movq $0, %r12
+decompile_loop:
+	movzb intermediate_src(%r12), %r14
+	shlq $1, %r14 # Multiply by 2
+	movw decompile_instruction_table(%r14), %ax
+	movzb %al, %rdi
+	movb %ah, %al
+	movzb %al, %rdx
+	addq %rdx, %r12
+
+	# Write to file
+	movq %r13, %rsi
+	call fputc
+
+	# End condition
+	cmpq $0, %r14
+	jne decompile_loop
+
+	# Close file
+	movq %r13, %rdi
+	call fclose
+
+	# Epilogue of compile subroutine
+	movq -8(%rbp), %r12
+	movq -16(%rbp), %r13
+	movq -24(%rbp), %r14
+	movq -32(%rbp), %r15
+	EPILOGUE
 
 # Limit print count, use 1000 for stats
 .macro LIMIT_PRINT_COUNT
@@ -185,7 +297,11 @@ skip_char_counter:
 	jmp *compile_jmp_table(%rax)
 
 compile_return:
+	# Write exit instruction
+	movb $OP_CODE_EXIT, intermediate_src(%r12)
+
 	SET_INTERMEDIATE_SRC_SIZE_STAT # Comment out above
+	DECOMPILER # Comment out above
 
 	# Restore %r12-15
 	movq -8(%rbp), %r12
@@ -511,7 +627,7 @@ run_instruction_jmp_table:
 	.quad run_return				# 25
 	.quad run_instruction_init_mult # 26 init mult
 	.quad run_instruction_plus		# 27 plus
-	.quad run_instruction_set_zero	# 28 set
+	.quad run_instruction_set_zero	# 28 set zero
 	.quad run_instruction_mult_add	# 29 mult add
 	.quad run_instruction_in		# 30 in
 	.quad run_instruction_out		# 31 out
