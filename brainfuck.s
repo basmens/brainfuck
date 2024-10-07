@@ -56,74 +56,89 @@
 
 # Comment out here to switch on/off decompiling
 .macro DECOMPILER
-	// jmp decomile_intermediate_src
+	jmp decomile_intermediate_src
 .endm
 
+decompile_name_exit:				.asciz "exit\n"
+decompile_name_if:					.asciz "if\n"
+decompile_name_for:					.asciz "for\n"
+decompile_name_right:				.asciz "move_mem_ptr amount=%hhd\n"
+decompile_name_scan_right_pow2:		.asciz "scanr_pow2 movement=%hu\n"
+decompile_name_scan_left_pow2:		.asciz "scanl_pow2 movement=%hu\n"
+decompile_name_scan_right_threes:	.asciz "scanr_threes\n"
+decompile_name_scan_left_threes:	.asciz "scanl_threes\n"
+decompile_name_scan_manual:			.asciz "scan_manual movement=%hd\n"
+decompile_name_load_loop_count:		.asciz "load_loop_count add_count=%hhd\n"
+decompile_name_plus:				.asciz "plus amount=%hhd offset=%hd\n"
+decompile_name_set_zero:			.asciz "set_zero offset=%hd\n"
+decompile_name_mult_add:			.asciz "mult_add amount=%hhd offset=%hd\n"
+decompile_name_in:					.asciz "in offset=%hd\n"
+decompile_name_out:					.asciz "out offset=%hd\n"
 decompile_instruction_table:
-	.ascii "e"	# 0 exit
 	.byte 0
-	.ascii "["	# 1 if
+	.quad decompile_name_exit
 	.byte INSTRUCTION_SIZE_IF
-	.ascii "]"	# 2 for
+	.quad decompile_name_if
 	.byte INSTRUCTION_SIZE_FOR
-	.ascii ">"	# 3 right
+	.quad decompile_name_for
 	.byte INSTRUCTION_SIZE_RIGHT
-	.ascii "e"	# 4
+	.quad decompile_name_right
 	.byte INSTRUCTION_SIZE_SCAN_RIGHT_POW2
-	.ascii "s"	# 5
+	.quad decompile_name_scan_right_pow2
 	.byte INSTRUCTION_SIZE_SCAN_LEFT_POW2
-	.ascii "s"	# 6
+	.quad decompile_name_scan_left_pow2
 	.byte INSTRUCTION_SIZE_SCAN_RIGHT_THREE
-	.ascii "S"	# 7
+	.quad decompile_name_scan_right_threes
 	.byte INSTRUCTION_SIZE_SCAN_LEFT_THREE
-	.ascii "S"	# 8
+	.quad decompile_name_scan_left_threes
 	.byte INSTRUCTION_SIZE_SCAN_MANUAL
-	.ascii "S"	# 9
+	.quad decompile_name_scan_manual
 	.byte 0
-	.ascii "e"	# 10
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "e"	# 11
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "e"	# 12
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "e"	# 13
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "e"	# 14
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "e"	# 15
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "e"	# 16
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "e"	# 17
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "e"	# 18
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "e"	# 19
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "e"	# 20
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "e"	# 21
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "e"	# 22
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "e"	# 23
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "e"	# 24
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "e"	# 25
+	.quad decompile_name_exit
 	.byte 0
-	.ascii "i"	# 26 init mult
-	.byte INSTRUCTION_SIZE_INIT_MULT
-	.ascii "+"	# 27 plus
+	.quad decompile_name_exit
+	.byte INSTRUCTION_SIZE_LOAD_LOOP_COUNT
+	.quad decompile_name_load_loop_count
 	.byte INSTRUCTION_SIZE_PLUS
-	.ascii "0"	# 28 set zero
+	.quad decompile_name_plus
 	.byte INSTRUCTION_SIZE_SET_ZERO
-	.ascii "*"	# 29 mult add
+	.quad decompile_name_set_zero
 	.byte INSTRUCTION_SIZE_MULT_ADD
-	.ascii ","	# 30 in
+	.quad decompile_name_mult_add
 	.byte INSTRUCTION_SIZE_IN
-	.ascii "."	# 31 out
+	.quad decompile_name_in
 	.byte INSTRUCTION_SIZE_OUT
+	.quad decompile_name_out
 
 write_file_mode: .asciz "w"
 write_file_name: .asciz "stats/intermediate_src.txt"
@@ -139,18 +154,35 @@ decomile_intermediate_src:
 
 	# Write file loop
 	movq $0, %r12
+	movq $9, %r15
 decompile_loop:
-	movzb intermediate_src(%r12), %r14
-	shlq $1, %r14 # Multiply by 2
-	movw decompile_instruction_table(%r14), %ax
-	movzb %al, %rdi
-	movb %ah, %al
-	movzb %al, %rdx
-	addq %rdx, %r12
+	movq intermediate_src(%r12), %r14 # Get instruction
+	movzb %r14b, %rax # Multiply op code by 5 to index into the decompile table
+	mulq %r15
+	movq decompile_instruction_table + 1(%rax), %rsi # Get instruction name
+	movzb decompile_instruction_table(%rax), %rax # Get instruction size
+	addq %rax, %r12 # Increment intermediate src pointer by length of instruction
 
+	# If instruction size is 2 or 6, print an amount too
+	test $1, %al # Test if instruction size is an even number
+	jnz decompile_skip_amount_parameter # If odd, skip
+	shrq $8, %r14 # Get amount parameters
+	movzb %r14b, %rdx
+
+decompile_skip_amount_parameter:
+	# Test if instruction size is <= 5, print an offset too
+	cmpb $5, %al # Test if <= 5
+	jb decompile_skip_offset_parameter
+	shrq $8, %r14 # Get offset parameters
+	movzw %r14w, %rcx # Always move the offset into %rcx
+	test $1, %al # Test if instruction size is an even number
+	cmovnz %rcx, %rdx # If instruction size is odd, move offset into %rdx too
+
+decompile_skip_offset_parameter:
 	# Write to file
-	movq %r13, %rsi
-	call fputc
+	movq %r13, %rdi # Give file pointer
+	movq $0, %rax
+	call fprintf
 
 	# End condition
 	cmpq $0, %r14
@@ -383,7 +415,7 @@ compile_if:
 .equ INSTRUCTION_SIZE_SET_ZERO, 5
 # Multiplication first loads the amount the addition is repeated into a dedicated register, 
 # then adds the mult factor * this repetition amount to the memory at the memory pointer offset.
-.equ INSTRUCTION_SIZE_INIT_MULT, 6 # 1 byte for op code, 1 byte for the source add count, 4 bytes for memory pointer offset for the source
+.equ INSTRUCTION_SIZE_LOAD_LOOP_COUNT, 6 # 1 byte for op code, 1 byte for the source add count, 4 bytes for memory pointer offset for the source
 .equ INSTRUCTION_SIZE_MULT_ADD, 6 # 1 byte for op code, 1 byte for the mult factor, 4 bytes for memory pointer offset for the destination
 
 .equ INSTRUCTION_SIZE_SCAN_RIGHT_POW2, 2 # 1 byte for op code, 1 byte for minuend index
@@ -426,8 +458,8 @@ check_loop_optimization_mult:
 		If the offset is 0, we found a source add instruction and keep track of it. If the offset is not 0, 
 		we found a destination and overwrite the instruction we just read with a mult instruction. %rax will contain the 
 		location of the if instruction, and keep it. %rcx will contain the instruction after the if and will increment 
-		to read the plus instructins. %12 will start of INSTRUCTION_SIZE_INIT_MULT away from the if statement to keep room 
-		for the init instruction, and then write the mult instructions. %rdx will contain the location of the for instruction 
+		to read the plus instructins. %12 will start of INSTRUCTION_SIZE_LOAD_LOOP_COUNT away from the if statement to keep room 
+		for the load loop count instruction, and then write the mult instructions. %rdx will contain the location of the for instruction 
 		to keep track of the end of the loop. Finally, %r11 will store the memory pointer offset originating form the parent 
 		bracket frame and %r8 will keep track of the source add count.
 	*/
@@ -445,7 +477,7 @@ optimize_mult_loop_skip_remove_right_move:
 	# Assignments after the move check
 	movl %r12d, %edx # Copy %r12 to %rdx, %rdx will keep track of the end of the loop
 	movl %eax, %r12d # Move intermediate src pointer to instruction after if
-	addl $INSTRUCTION_SIZE_INIT_MULT, %r12d # Move %r12 by INSTRUCTION_SIZE_INIT_MULT
+	addl $INSTRUCTION_SIZE_LOAD_LOOP_COUNT, %r12d # Move %r12 by INSTRUCTION_SIZE_LOAD_LOOP_COUNT
 	movl 12(%rsp), %r11d # Write offset from memory pointer
 	movl $0, %r8d # Set source add count to 0
 optimize_mult_loop_loop:
@@ -474,8 +506,8 @@ optimize_mult_loop_loop_end_condition:
 	cmpl %ecx, %edx # If we haven't reached the if instruction, keep looping
 	jne optimize_mult_loop_loop
 
-	# Write init mult instruction
-	movb $OP_CODE_INIT_MULT, intermediate_src(%eax) # Write op code to instruction
+	# Write load loop count instruction
+	movb $OP_CODE_LOAD_LOOP_COUNT, intermediate_src(%eax) # Write op code to instruction
 	movb %r8b, 1 + intermediate_src(%eax) # Write source add count to instruction
 	movl %r11d, 2 + intermediate_src(%eax)
 
@@ -632,7 +664,7 @@ run_loop:
 
 run_return:
 	# Restore %r12-15
-	movq -8(%rbp), %r12
+	movq -8(%rbp), %r12	
 	movq -16(%rbp), %r13
 	movq -24(%rbp), %r14
 	movq -32(%rbp), %r15
@@ -648,7 +680,7 @@ run_return:
 .equ OP_CODE_SCAN_RIGHT_THREE, 6
 .equ OP_CODE_SCAN_LEFT_THREE, 7
 .equ OP_CODE_SCAN_MANUAL, 8
-.equ OP_CODE_INIT_MULT, 26
+.equ OP_CODE_LOAD_LOOP_COUNT, 26
 .equ OP_CODE_PLUS, 27
 .equ OP_CODE_SET_ZERO, 28
 .equ OP_CODE_MULT_ADD, 29
@@ -681,7 +713,7 @@ run_instruction_jmp_table:
 	.quad run_return				# 23
 	.quad run_return				# 24
 	.quad run_return				# 25
-	.quad run_instruction_init_mult # 26 init mult
+	.quad run_instruction_load_loop_count # 26 load loop count
 	.quad run_instruction_plus		# 27 plus
 	.quad run_instruction_set_zero	# 28 set zero
 	.quad run_instruction_mult_add	# 29 mult add
@@ -873,42 +905,42 @@ run_instruction_set_zero:
 	addq $INSTRUCTION_SIZE_SET_ZERO, %r12 # Increment intermediate src pointer
 	jmp run_loop
 
-run_instruction_init_mult:
-	addq $INSTRUCTION_SIZE_INIT_MULT, %r12 # Increment intermediate src pointer
+run_instruction_load_loop_count:
+	addq $INSTRUCTION_SIZE_LOAD_LOOP_COUNT, %r12 # Increment intermediate src pointer
 	cmpb $-1, %ch # Check if add count is 1, then repetition count is x
-	jne init_mult_check_one
+	jne load_loop_count_check_one
 
 	shrq $16, %rcx # Get memory pointer offset
 	movb runtime_memory(%r13d, %ecx), %r15b # Save repetition count
 	jmp run_loop
 
-init_mult_check_one:
+load_loop_count_check_one:
 	cmpb $1, %ch # Check if add count is 1, then repetition count is 256 - x
-	jne init_mult_non_standard_case
+	jne load_loop_count_non_standard_case
 
 	shrq $16, %rcx # Get memory pointer offset
 	movb runtime_memory(%r13d, %ecx), %r15b # Save repetition count
 	negb %r15b # Do 256 - x
 	jmp run_loop
 
-init_mult_non_standard_case:
+load_loop_count_non_standard_case:
 	movq $0, %r15 # Reset repetition count
 	movq %rcx, %rax # Get memory pointer offset
 	shrq $16, %rax
 	movzb runtime_memory(%r13d, %eax), %rax # Get memory input
 
 	cmpb $0, %ah # Check if add count is positive or negative
-	jg init_mult_non_standard_case_positive
+	jg load_loop_count_non_standard_case_positive
 
 	# Case negative, negate add count
 	negb %ch # Negate add count
-	jmp init_mult_non_standard_case_loop
+	jmp load_loop_count_non_standard_case_loop
 
-init_mult_non_standard_case_positive:
+load_loop_count_non_standard_case_positive:
 	# Case positive, negate input
 	negb %al # Negate input
 
-init_mult_non_standard_case_loop:
+load_loop_count_non_standard_case_loop:
 	# Divide input by add count
 	movb $0, %ah # Clear ah
 	divb %ch # Divide by add count
@@ -922,7 +954,7 @@ init_mult_non_standard_case_loop:
 	movb %ah, %al # Move remainder into al
 	subb %ch, %al # Subtract add count
 	incb %r15b # Add 1 to repetition count
-	jmp init_mult_non_standard_case_loop
+	jmp load_loop_count_non_standard_case_loop
 
 run_instruction_mult_add:
 	movb %ch, %al # Move multiplier into mult register
