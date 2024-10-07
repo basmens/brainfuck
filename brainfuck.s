@@ -17,23 +17,23 @@
 
 # Comment out here to switch off statistics
 .macro SET_INTERMEDIATE_SRC_SIZE_STAT
-	// movq %r12, intermediate_src_size
+	movq %r12, intermediate_src_size
 .endm
 
 .macro INCR_EXECUTED_OPERATIONS_STAT
-	// incq executed_operations
+	incq executed_operations
 .endm
 
 .macro GET_TIME
-	// movq $228, %rax # clock_gettime
-	// movq $0, %rdi
-	// movq $compile_time_out, %rsi
-	// syscall
+	movq $228, %rax # clock_gettime
+	movq $0, %rdi
+	movq $compile_time_out, %rsi
+	syscall
 .endm
 
 # Comment out here to switch on/off decompiling
 .macro DECOMPILER
-	// jmp decomile_intermediate_src
+	jmp decomile_intermediate_src
 .endm
 
 decompile_name_exit:				.asciz "exit\n"
@@ -228,6 +228,8 @@ compile_char_\char:
 	movq %rbx, %rdx # Copy instruction repetition counter into %rdx for the intructions to use
 	movq $\jmp_table_index, %r15 # Set last read instruction
 	movq $\initial_repetition_count, %rbx # Set instruction repetition counter to initial value
+	cmpq $0, %rdx # If instruction repetition counter is 0, skip
+	je compile_loop
 	jmp *%rax # Jump to previous instruction
 .endm
 
@@ -298,13 +300,13 @@ compile_char_null:
 compile_char_left_repetition:
 	cmpq $compile_right, %r15 # Check if last instruction was a right
 	jne compile_char_left # Run last instruction and append a left instruction
-	decw %bx # Decrement instruction repetition counter
+	decl %ebx # Decrement instruction repetition counter
 	jmp compile_loop # Loop
 
 compile_char_right_repetition:
 	cmpq $compile_right, %r15 # Check if last instruction was a right
 	jne compile_char_right # Run last instruction and append a right instruction
-	incw %bx # Increment instruction repetition counter
+	incl %ebx # Increment instruction repetition counter
 	jmp compile_loop # Loop
 
 compile_char_minus_repetition:
