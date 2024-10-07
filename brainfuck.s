@@ -197,6 +197,7 @@ decompile_skip_offset_parameter:
 	movq -16(%rbp), %r13
 	movq -24(%rbp), %r14
 	movq -32(%rbp), %r15
+	movq -40(%rbp), %rbx
 	EPILOGUE
 
 # Limit print count, use 1000 for stats
@@ -247,6 +248,17 @@ brainfuck:
 
 
 
+.macro compile_char_simple char jmp_table_index initial_repetition_count
+compile_char_\char:
+	movq %r15, %rax # Copy last read instruction
+	movq %rbx, %rdx # Copy instruction repetition counter into %rdx for the intructions to use
+	movq $\jmp_table_index, %r15 # Set last read instruction
+	movq $\initial_repetition_count, %rbx # Set instruction repetition counter to initial value
+	jmp *%rax # Jump to previous instruction
+.endm
+
+
+
 ##############################################################################################################################################
 # Compile
 ##############################################################################################################################################
@@ -257,75 +269,81 @@ compile:
 	push %r12 # -8  Becomes intermediate_src counter
 	push %r13 # -16 Becomes loop counter
 	push %r14 # -24 Becomes program string
-	push %r15 # -32 Becomes instruction repetition counter
+	push %r15 # -32 Becomes last read instruction
+	push %rbx # -40 Becomes instruction repetition counter
 
-	/*
-		The compiler will have a two quads pushed onto the stack for every bracket frame. So, when entering a [, a two quads will
-		be pushed, and when ], will be exited, a two quads will be popped.
-
-		The first quad contains 4 bytes for the address of the [ and 4 byte for the total mem pointer movement.
-		The second quad 1 byte containing the flags for possible loop optimizations.
-	*/
-
-	/* bit representation in ascii of the 8 instructions
-		+: 0010 1011
-		-: 0010 1101
-		<: 0011 1100
-		>: 0011 1110
-		[: 0101 1011
-		]: 0101 1101
-		.: 0010 1100
-		,: 0010 1110
-
-		\n: 0000 1010
-		CR: 0000 1101
-		NUL: 0000 0000
-		Space: 0010 0000
-		Multiplying by 3505308283979744561L makes the highest four bits unique, with 14 as highest index
-	*/
-
-	# Push magic number for switch statement onto stack and keep it aligned
-	movq $3505308283979744561L, %rax
-	pushq %rax # -40 Magic number
-	pushq $0 # Push first stack frame
+	# Push first stack frame
+	pushq $0
 	pushq $3
 
 	# Move intermediate_src counter to 0, set loop counter to -1 and program string into %r14
 	movq $0, %r12
 	movq $-1, %r13
 	movq %rdi, %r14
+	movq $compile_loop, %r15 # Last read instruction
+	movq $0, %rbx # The instruction repetition counter
 compile_loop:
-	# Increment loop counter
+	# Get next char
 	incq %r13
+	movb (%r14, %r13), %al
 
-	# Get char
-	movzb (%r14, %r13), %rax
-	
-	// TMP CODE
-	cmpb $0x5b, %al
-	je skip_char_counter
-	cmpb $0x5d, %al
-	je skip_char_counter
-	cmpb $0x2c, %al
-	je skip_char_counter
-	cmpb $0x2e, %al
-	je skip_char_counter
+	# Check all the chars that can appear in the program
+	cmpb $0, %al	# Check for null termination character
+	je compile_char_null
+	cmpb $0x5b, %al	# Check for [
+	je compile_char_if
+	cmpb $0x5d, %al	# Check for ]
+	je compile_char_for
+	cmpb $0x3c, %al	# Check for <
+	je compile_char_left_repetition
+	cmpb $0x3e, %al	# Check for >
+	je compile_char_right_repetition
+	cmpb $0x2d, %al	# Check for -
+	je compile_char_minus_repetition
+	cmpb $0x2b, %al	# Check for +
+	je compile_char_plus_repetition
+	cmpb $0x2c, %al	# Check for ,
+	je compile_char_in
+	cmpb $0x2e, %al	# Check for .
+	je compile_char_out
+	jmp compile_loop # If it is none of those chars, it is either a comment or whitespace, so just ignore it
 
-	movq $0, %r15
-	decq %r13
-char_counter_loop:
-	incq %r13
-	incq %r15
-	cmpb 1(%r14, %r13), %al
-	je char_counter_loop
-skip_char_counter:
-	//
+	compile_char_simple if compile_if 1
+	compile_char_simple for compile_for 1
+	compile_char_simple left compile_right -1
+	compile_char_simple right compile_right 1
+	compile_char_simple minus compile_plus -1
+	compile_char_simple plus compile_plus 1
+	compile_char_simple in compile_in 1
+	compile_char_simple out compile_out 1
 
-	# Jmp into switch statement
-	mulq -40(%rbp)
-	shrq $60, %rax
-	shlq $3, %rax # Multiply by 8
-	jmp *compile_jmp_table(%rax)
+compile_char_null:
+	decq %r13 # Decrement loop counter to guarantee that the next loop cicle will also read a null termination character
+	compile_char_simple return compile_return 1
+
+compile_char_left_repetition:
+	cmpq $compile_right, %r15 # Check if last instruction was a right
+	jne compile_char_left # Run last instruction and append a left instruction
+	decw %bx # Decrement instruction repetition counter
+	jmp compile_loop # Loop
+
+compile_char_right_repetition:
+	cmpq $compile_right, %r15 # Check if last instruction was a right
+	jne compile_char_right # Run last instruction and append a right instruction
+	incw %bx # Increment instruction repetition counter
+	jmp compile_loop # Loop
+
+compile_char_minus_repetition:
+	cmpq $compile_plus, %r15 # Check if last instruction was a plus
+	jne compile_char_minus # Run last instruction and append a minus instruction
+	decb %bl # Decrement instruction repetition counter
+	jmp compile_loop # Loop
+
+compile_char_plus_repetition:
+	cmpq $compile_plus, %r15 # Check if last instruction was a plus
+	jne compile_char_plus # Run last instruction and append a plus instruction
+	incb %bl # Increment instruction repetition counter
+	jmp compile_loop # Loop
 
 compile_return:
 	# Write exit instruction
@@ -334,29 +352,13 @@ compile_return:
 	SET_INTERMEDIATE_SRC_SIZE_STAT # Comment out above
 	DECOMPILER # Comment out above
 
-	# Restore %r12-15
+	# Restore %r12-15 and %rbx
 	movq -8(%rbp), %r12
 	movq -16(%rbp), %r13
 	movq -24(%rbp), %r14
 	movq -32(%rbp), %r15
+	movq -40(%rbp), %rbx
 	EPILOGUE
-	
-compile_jmp_table:
-	.quad compile_return 	# 0, zero termination
-	.quad compile_loop 		# 1, space
-	.quad compile_plus		# 2, +
-	.quad compile_return 	# 3
-	.quad compile_if		# 4, [
-	.quad compile_in		# 5, ,
-	.quad compile_left		# 6, <
-	.quad compile_loop		# 7, carriage return
-	.quad compile_minus		# 8, -
-	.quad compile_return	# 9
-	.quad compile_for		# 10, ]
-	.quad compile_out		# 11, .
-	.quad compile_right		# 12, >
-	.quad compile_return	# 13
-	.quad compile_loop		# 14, new line
 
 
 .macro write_instruction name
@@ -375,8 +377,6 @@ compile_jmp_table:
 	write_instruction \name
 .endm
 
-
-.equ INSTRUCTION_SIZE_RIGHT, 5
 .macro compile_pop_mem_movement
 	movl 12(%rsp), %eax # Get memory pointer offset from bracket frame
 	cmpl $0, %eax # If memory pointer offset is 0, skip
@@ -476,7 +476,6 @@ check_loop_optimization_mult:
 	# Remove move instruction using %eax as the src pointer
 	remove_move_instruction_via_r8 %eax
 
-optimize_mult_loop_skip_remove_right_move:
 	# Assignments after the move check
 	movl %r12d, %edx # Copy %r12 to %rdx, %rdx will keep track of the end of the loop
 	movl %eax, %r12d # Move intermediate src pointer to instruction after if
@@ -596,31 +595,19 @@ compile_for_no_optimizations:
 	andb $0, (%rsp) # No loop optimizations possible
 	jmp compile_loop
 
-compile_left:
-	subl %r15d, 12(%rsp) # Decrement memory pointer offset in bracket frame
-	andb $(~LOOP_OPPTIMIZATION_SET_ZERO), (%rsp) # Not a set zero loop
-	jmp compile_loop
-
+.equ INSTRUCTION_SIZE_RIGHT, 5
 compile_right:
-	addl %r15d, 12(%rsp) # Increment memory pointer offset in bracket frame
+	addl %edx, 12(%rsp) # Increment memory pointer offset in bracket frame
 	andb $(~LOOP_OPPTIMIZATION_SET_ZERO), (%rsp) # Not a set zero loop
 	jmp compile_loop
 
+# Plus start with an op code, then 1 byte for the length, and then blocks of 3 representing all the plus
+# instructions, each 1 byte for the amount to add, and then 2 bytes for the offset within memory.
 .equ INSTRUCTION_SIZE_PLUS, 6
-/*
-	Plus start with an op code, then 1 byte for the length, and then blocks of 3 representing all the plus
-	instructions, each 1 byte for the amount to add, and then 2 bytes for the offset within memory.
-	Minus instruction are just plus instructions, just with a negative amount to add.
-*/
-compile_minus:
-	negb %r15b # Invert amount to subtract, now amount to add
 compile_plus:
-	# Init plus instruction
 	movl 12(%rsp), %eax # Get offset from memory pointer
-	write_instruction_byte_long PLUS %r15b %eax
-	
+	write_instruction_byte_long PLUS %dl %eax
 	andb $(~LOOP_OPPTIMIZATION_SCAN_MEMORY), (%rsp) # Not a scan memory loop
-
 	jmp compile_loop
 
 
