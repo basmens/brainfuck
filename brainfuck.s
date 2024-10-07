@@ -14,44 +14,21 @@
     ret
 .endm
 
-# Parameters
-.macro PARAM1 p1
-    movq \p1, %rdi
-.endm
-
-.macro PARAM2 p1, p2
-    movq \p1, %rdi
-    movq \p2, %rsi
-.endm
-
-.macro PARAM3 p1, p2, p3
-    movq \p1, %rdi
-    movq \p2, %rsi
-    movq \p3, %rdx
-.endm
-
-.macro PARAM4 p1, p2, p3, p4
-    movq \p1, %rdi
-    movq \p2, %rsi
-    movq \p3, %rdx
-    movq \p4, %rcx
-.endm
-
 
 # Comment out here to switch off statistics
 .macro SET_INTERMEDIATE_SRC_SIZE_STAT
-	movq %r12, intermediate_src_size
+	// movq %r12, intermediate_src_size
 .endm
 
 .macro INCR_EXECUTED_OPERATIONS_STAT
-	incq executed_operations
+	// incq executed_operations
 .endm
 
 .macro GET_TIME
-	movq $228, %rax # clock_gettime
-	movq $0, %rdi
-	movq $compile_time_out, %rsi
-	syscall
+	// movq $228, %rax # clock_gettime
+	// movq $0, %rdi
+	// movq $compile_time_out, %rsi
+	// syscall
 .endm
 
 # Comment out here to switch on/off decompiling
@@ -653,10 +630,6 @@ run_loop:
 	jmp *run_instruction_jmp_table(%rdx) # Index into the table
 
 run_return:
-	# Print output
-	movq $output, %rdi
-	call puts
-
 	# Restore %r12-15
 	movq -8(%rbp), %r12	
 	movq -16(%rbp), %r13
@@ -968,8 +941,8 @@ run_instruction_in:
 
 run_instruction_out:
 	shrq $8, %rcx # Get memory pointer offset
-	movb runtime_memory(%r13d, %ecx), %al # Ouput from memory
-	movb %al, (%r14)
+	movb runtime_memory(%r13d, %ecx), %dil # Ouput from memory
+	call putchar
 	incq %r14 # Increment output pointer
 	addq $INSTRUCTION_SIZE_OUT, %r12 # Increment intermediate src pointer
 
