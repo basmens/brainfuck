@@ -56,7 +56,7 @@
 
 # Comment out here to switch on/off decompiling
 .macro DECOMPILER
-	jmp decomile_intermediate_src
+	// jmp decomile_intermediate_src
 .endm
 
 decompile_name_exit:				.asciz "exit\n"
@@ -201,14 +201,17 @@ decompile_skip_offset_parameter:
 
 # Limit print count, use 1000 for stats
 .macro LIMIT_PRINT_COUNT
-	// incq %r14
+	// subq $output, %r14
 	// cmpq $1000, %r14
 	// je run_return
+	// addq $output, %r14
 .endm
 
 
 
 .data
+.align 8
+output: .skip 65546, 0
 intermediate_src: .skip 65546, 0
 runtime_memory: .skip 30000, 0
 
@@ -652,7 +655,7 @@ run:
 	# Init intermediate_src counter, memory pointer and output counter to 0
 	movq $0, %r12
 	movq $0, %r13
-	movq $0, %r14
+	movq $output, %r14
 run_loop:
 	INCR_EXECUTED_OPERATIONS_STAT # Comment out above
 
@@ -663,6 +666,10 @@ run_loop:
 	jmp *run_instruction_jmp_table(%rdx) # Index into the table
 
 run_return:
+	# Print output
+	movq $output, %rdi
+	call puts
+
 	# Restore %r12-15
 	movq -8(%rbp), %r12	
 	movq -16(%rbp), %r13
@@ -974,9 +981,10 @@ run_instruction_in:
 
 run_instruction_out:
 	shrq $8, %rcx # Get memory pointer offset
-	movzb runtime_memory(%r13d, %ecx), %rdi # Ouput from memory
+	movb runtime_memory(%r13d, %ecx), %al # Ouput from memory
+	movb %al, (%r14)
+	incq %r14 # Increment output pointer
 	addq $INSTRUCTION_SIZE_OUT, %r12 # Increment intermediate src pointer
-	call putchar
 
 	LIMIT_PRINT_COUNT
 
