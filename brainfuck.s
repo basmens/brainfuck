@@ -179,17 +179,14 @@ decompile_skip_offset_parameter:
 
 # Limit print count, use 1000 for stats
 .macro LIMIT_PRINT_COUNT
-	// subq $output, %r14
 	// cmpq $1000, %r14
 	// je run_return
-	// addq $output, %r14
 .endm
 
 
 
 .data
 .align 8
-output: .skip 65546, 0
 intermediate_src: .skip 65546, 0
 runtime_memory: .skip 30000, 0
 
@@ -619,7 +616,7 @@ run:
 	# Init intermediate_src counter, memory pointer and output counter to 0
 	movq $0, %r12
 	movq $0, %r13
-	movq $output, %r14
+	movq $0, %r14
 run_loop:
 	INCR_EXECUTED_OPERATIONS_STAT # Comment out above
 
