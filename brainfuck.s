@@ -56,7 +56,7 @@
 
 # Comment out here to switch on/off decompiling
 .macro DECOMPILER
-	jmp decomile_intermediate_src
+	// jmp decomile_intermediate_src
 .endm
 
 decompile_instruction_table:
@@ -69,16 +69,16 @@ decompile_instruction_table:
 	.ascii ">"	# 3 right
 	.byte INSTRUCTION_SIZE_RIGHT
 	.ascii "e"	# 4
-	.byte 0
-	.ascii "e"	# 5
-	.byte 0
-	.ascii "e"	# 6
-	.byte 0
-	.ascii "e"	# 7
-	.byte 0
-	.ascii "e"	# 8
-	.byte 0
-	.ascii "e"	# 9
+	.byte INSTRUCTION_SIZE_SCAN_RIGHT_POW2
+	.ascii "s"	# 5
+	.byte INSTRUCTION_SIZE_SCAN_LEFT_POW2
+	.ascii "s"	# 6
+	.byte INSTRUCTION_SIZE_SCAN_RIGHT_THREE
+	.ascii "S"	# 7
+	.byte INSTRUCTION_SIZE_SCAN_LEFT_THREE
+	.ascii "S"	# 8
+	.byte INSTRUCTION_SIZE_SCAN_MANUAL
+	.ascii "S"	# 9
 	.byte 0
 	.ascii "e"	# 10
 	.byte 0
@@ -211,14 +211,10 @@ brainfuck:
 	EPILOGUE
 
 
-/*
-	compile
-	Parameters:
-		%rdi, The string to compile
-	Returns: void
-	Description:
-		Compiles the code and outputs it in $intermediate_src
-*/
+
+##############################################################################################################################################
+# Compile
+##############################################################################################################################################
 compile:
 	PROLOGUE
 
@@ -389,6 +385,12 @@ compile_if:
 # then adds the mult factor * this repetition amount to the memory at the memory pointer offset.
 .equ INSTRUCTION_SIZE_INIT_MULT, 6 # 1 byte for op code, 1 byte for the source add count, 4 bytes for memory pointer offset for the source
 .equ INSTRUCTION_SIZE_MULT_ADD, 6 # 1 byte for op code, 1 byte for the mult factor, 4 bytes for memory pointer offset for the destination
+
+.equ INSTRUCTION_SIZE_SCAN_RIGHT_POW2, 2 # 1 byte for op code, 1 byte for minuend index
+.equ INSTRUCTION_SIZE_SCAN_LEFT_POW2, 2 # 1 byte for op code, 1 byte for minuend index
+.equ INSTRUCTION_SIZE_SCAN_RIGHT_THREE, 1 # 1 byte for op code
+.equ INSTRUCTION_SIZE_SCAN_LEFT_THREE, 1 # 1 byte for op code
+.equ INSTRUCTION_SIZE_SCAN_MANUAL, 5 # 1 byte for op code, 4 for memory pointer offset
 compile_for:
 	movb (%rsp), %al # Get loop optimization flags from bracket frame
 	movb %al, %ah # Both al and ah contain the flags, al is used to check, ah for quick access
@@ -436,7 +438,7 @@ check_loop_optimization_mult:
 	addl $INSTRUCTION_SIZE_IF, %ecx # Move %rcx by INSTRUCTION_SIZE_IF
 	addq $16, %rsp # Pop bracket frame
 
-	# Reemove move instruction using %eax as the src pointer
+	# Remove move instruction using %eax as the src pointer
 	remove_move_instruction_via_r8 %eax
 
 optimize_mult_loop_skip_remove_right_move:
@@ -488,6 +490,61 @@ check_loop_optimization_scan_memory:
 	andb $LOOP_OPPTIMIZATION_SCAN_MEMORY, %al # Isolate scan memory flag
 	cmpb $0, %al # If scan memory flag is not set, skip optimize loop
 	je compile_for_no_optimizations
+	
+	movl 12(%rsp), %eax # Read memory pointer offset of left instruction
+	subl $INSTRUCTION_SIZE_IF, %r12d # Go back to the if instruction
+	addq $16, %rsp # Pop bracket frame
+	andb $0, (%rsp) # No loop optimizations possible
+
+	# If we got here, that means the loop contains a singular memory movement instruction. If the memory offset is withing the 
+	# range of -4 to 4, inclusive, then we can use vector registers. If the values are 1, 2, 4, -1, -2 or -4, they divide 64 evenly,
+	# so we can use an optimized instruction to take advantage of that. Then the minduend indices should be 0, 32, 96, 64, 128, 160 
+	# consecutively. Otherwise we have to think about the remainders of the mod3 arithmatic. Finally, if it doesn't fit in the range,
+	# we'll have to do a more manual scan.
+
+	cmpl $0, %eax # If greater than zero, do checks for positive numbers, else for negative
+	jl check_loop_optimization_scan_negatives
+	cmpl $4, %eax # Check if it is a manual scan
+	jg optimize_loop_scan_manual
+	cmpl $3, %eax # Check if it is a three scan loop
+	je optimize_loop_scan_positive_three
+
+	# It is a simplified right scan instruction
+	shlb $5, %al # Multiply the memory pointer offset by 32 to get the minuend index (32, 64, 128)
+	movb %al, 1 + intermediate_src(%r12) # Insert minuend index into instruction
+	write_instruction SCAN_RIGHT_POW2
+	jmp compile_loop
+
+check_loop_optimization_scan_negatives:
+	cmpl $-4, %eax # Check if it is a manual scan
+	jl optimize_loop_scan_manual
+	cmpl $-3, %eax # Check if it is a three scan loop
+	je optimize_loop_scan_negative_three
+
+	# Write a pow 2 scan loop
+	negl %eax # Negate memory pointer offset to make it positive
+	incb %al # Increment it to make it 2, 3 or 5
+	cmpb $2, %al # Check if the movement amount is 2
+	jne 1f
+	movb $0, %al # If so, set it to 0
+1:
+	shlb $5, %al # Multiply by 32 to get the minuend index (0, 96, 160)
+	movb %al, 1 + intermediate_src(%r12) # Insert minuend index into instruction
+	write_instruction SCAN_LEFT_POW2
+	jmp compile_loop
+
+optimize_loop_scan_positive_three:
+	write_instruction SCAN_RIGHT_THREE
+	jmp compile_loop
+
+optimize_loop_scan_negative_three:
+	write_instruction SCAN_LEFT_THREE
+	jmp compile_loop
+
+optimize_loop_scan_manual:
+	movl %eax, 1 + intermediate_src(%r12) # Insert memory pointer offset into instruction
+	write_instruction SCAN_MANUAL
+	jmp compile_loop
 
 compile_for_no_optimizations:
 	compile_pop_mem_movement
@@ -547,15 +604,9 @@ compile_out:
 	jmp compile_loop
 
 
-
-
-/*
-	run
-	Parameters: none
-	Returns: void
-	Description:
-		Runs the compiles brainfuck code located in $intermediate_src
-*/
+##############################################################################################################################################
+# Run
+##############################################################################################################################################
 run:
 	PROLOGUE
 
@@ -592,6 +643,11 @@ run_return:
 .equ OP_CODE_IF, 1
 .equ OP_CODE_FOR, 2
 .equ OP_CODE_RIGHT, 3
+.equ OP_CODE_SCAN_RIGHT_POW2, 4
+.equ OP_CODE_SCAN_LEFT_POW2, 5
+.equ OP_CODE_SCAN_RIGHT_THREE, 6
+.equ OP_CODE_SCAN_LEFT_THREE, 7
+.equ OP_CODE_SCAN_MANUAL, 8
 .equ OP_CODE_INIT_MULT, 26
 .equ OP_CODE_PLUS, 27
 .equ OP_CODE_SET_ZERO, 28
@@ -603,11 +659,11 @@ run_instruction_jmp_table:
 	.quad run_instruction_if		# 1 if
 	.quad run_instruction_for		# 2 for
 	.quad run_instruction_right		# 3 right
-	.quad run_return				# 4
-	.quad run_return				# 5
-	.quad run_return				# 6
-	.quad run_return				# 7
-	.quad run_return				# 8
+	.quad run_instruction_scan_right_pow2	# 4
+	.quad run_instruction_scan_left_pow2	# 5
+	.quad run_instruction_scan_right_three	# 6
+	.quad run_instruction_scan_left_three	# 7
+	.quad run_instruction_scan_manual		# 8
 	.quad run_return				# 9
 	.quad run_return				# 10
 	.quad run_return				# 11
@@ -631,6 +687,59 @@ run_instruction_jmp_table:
 	.quad run_instruction_mult_add	# 29 mult add
 	.quad run_instruction_in		# 30 in
 	.quad run_instruction_out		# 31 out
+
+
+
+/*
+	Scans the ymm1 register for the first byte whose value is not 0. The scan can go both ways by substituting either addq or subq into the
+	first parameter, and bsfq or bsrq into the second parameter, and changing the 4th, 5th, 6th and 7th parameters to the appropriate
+	instructions to extract the right 64 bits from the ymm1 register. The macro assumes that these results end up in xmm1, xmm2, xmm3 and xmm4
+	consecutively. Note though that in reverse the result in the memory pointer will be one to big. The third parameter is the label to jump 
+	to if no match is found, potentially so this macro can be used in a loop. Even if no match is found, the memory pointer will still 
+	be incremented/decremented by 32.
+*/
+.macro scan_ymm1_for_0s add_or_sub_instruction bsr_or_f_instruction no_ones_label instr_extract_0 instr_extract_1 instr_extract_2 instr_extract_3
+	\instr_extract_0 # Extract first 8 byte
+	movq %xmm1, %rax # Get lower half
+	cmpq $0, %rax # Check if any byte is 1
+	jne 1f # Check the 64 msb
+
+	\add_or_sub_instruction $8, %r13d # Increment/decrement memory pointer by 8
+	\instr_extract_1 # Extract next 8 byte
+	movq %xmm2, %rax # Get lower half
+	cmpq $0, %rax # Check if any byte is 1
+	jne 1f # Check the 64 msb
+
+	\add_or_sub_instruction $8, %r13d # Increment/decrement memory pointer by 8
+	\instr_extract_2 # Extract next 8 byte
+	movq %xmm3, %rax # Get lower half
+	cmpq $0, %rax # Check if any byte is 1
+	jne 1f # Check the 64 msb
+
+	\add_or_sub_instruction $8, %r13d # Increment/decrement memory pointer by 8
+	\instr_extract_3 # Extract last 8 byte
+	movq %xmm4, %rax # Get lower half
+	cmpq $0, %rax # Check if any byte is 1
+	jne 1f # Check the 64 msb
+	\add_or_sub_instruction $8, %r13d # Increment/decrement memory pointer by 8
+	jmp \no_ones_label # No ones
+
+1:
+	\bsr_or_f_instruction %rax, %rax # Get index of the first non zero bit
+	shrq $3, %rax # Divide by 8
+	addl %eax, %r13d # Add to %r15
+.endm
+
+.align 32
+scan_subtraction_minuends:
+	.quad 0x0101010101010101, 0x0101010101010101, 0x0101010101010101, 0x0101010101010101 # 0   Left 1
+	.quad 0x0101010101010101, 0x0101010101010101, 0x0101010101010101, 0x0101010101010101 # 32  Right 1
+	.quad 0x0001000100010001, 0x0001000100010001, 0x0001000100010001, 0x0001000100010001 # 64  Right 2
+	.quad 0x0100010001000100, 0x0100010001000100, 0x0100010001000100, 0x0100010001000100 # 96  Left 2
+	.quad 0x0000000100000001, 0x0000000100000001, 0x0000000100000001, 0x0000000100000001 # 128 Right 4
+	.quad 0x0100000001000000, 0x0100000001000000, 0x0100000001000000, 0x0100000001000000 # 160 Left 4
+	.quad 0x0001000001000001, 0x0100000100000100, 0x0000010000010000, 0x0001000001000001 # 192 Three's
+	.word 0x0100
 	
 run_instruction_if:
 	addq $INSTRUCTION_SIZE_IF, %r12 # Increment intermediate src pointer regardless
@@ -654,6 +763,101 @@ run_instruction_right:
 	shrq $8, %rcx # Get ammount to move
 	addl %ecx, %r13d # Get ammount to move and add to memory pointer
 	addl $INSTRUCTION_SIZE_RIGHT, %r12d # Increment intermediate src pointer
+	jmp run_loop
+
+/*
+	For the scan instructions, load the next 32 bytes from memory. Then do a saturated subtraction of each 
+	byte from 1, so that the result may only be 1 if the byte was 0. Now, using the bsf/bsr instruction, we can 
+	get the index of the first non zero bit, giving us the index of the first byte in memory whose value was 0.
+*/
+run_instruction_scan_right_pow2:
+	movl %r13d, %r15d # Load -memory pointer into %r15
+	negl %r15d
+	shrq $8, %rcx # Get memory pointer offset
+	andq $0xFF, %rcx # Mask out all but the last byte
+	vmovdqa scan_subtraction_minuends(%rcx), %ymm0 # Load subtraction minuends
+run_instruction_scan_right_pow2_loop:
+	vmovdqu runtime_memory(%r13d), %ymm1 # Get next 32 bytes
+	vpsubusb %ymm1, %ymm0, %ymm1 # Subtract each byte from 1
+ 
+	# Nothing for the first extraction step, then a vpsrldq to get segment 2, then a vextracti128 to get segment 3 and 4, then a vpsrldq to get segment 4
+	scan_ymm1_for_0s addl, bsfq, run_instruction_scan_right_pow2_loop, "", "vpsrldq $8, %xmm1, %xmm2", "vextracti128 $1, %ymm1, %xmm3", "vpsrldq $8, %xmm3, %xmm4"
+	addl $INSTRUCTION_SIZE_SCAN_RIGHT_POW2, %r12d # Increment intermediate src pointer
+	addl %r13d, %r15d # Add new memory pointer to %r15 to get the movement
+	jmp run_loop
+
+run_instruction_scan_left_pow2:
+	movl %r13d, %r15d # Load -memory pointer into %r15
+	negl %r15d
+	shrq $8, %rcx # Get memory pointer offset
+	andq $0xFF, %rcx # Mask out all but the last byte
+	vmovdqa scan_subtraction_minuends(%rcx), %ymm0 # Load subtraction minuends
+run_instruction_scan_left_pow2_loop:
+	vmovdqu runtime_memory - 31(%r13d), %ymm1 # Get next 32 bytes
+	vpsubusb %ymm1, %ymm0, %ymm4 # Subtract each byte from 1
+
+	# For the first extraction step do a vextracti128 and vpsrldq to get segment 3 and 4 of which we get segment 4, then nothing, then get segment 2, and then nothing
+	scan_ymm1_for_0s subl, bsrq, run_instruction_scan_left_pow2_loop, "vextracti128 $1, %ymm4, %xmm2 ; vpsrldq $8, %xmm2, %xmm1", "", "vpsrldq $8, %xmm4, %xmm3", ""
+	addl $INSTRUCTION_SIZE_SCAN_LEFT_POW2, %r12d # Increment intermediate src pointer
+	subl $7, %r13d # Decrement memory pointer by 1, since scan_ymm1_for_0s leaves it off by one in reverse
+	addl %r13d, %r15d # Add new memory pointer to %r15 to get the movement
+	jmp run_loop
+
+run_instruction_scan_right_three:
+	movl %r13d, %r15d # Load -memory pointer into %r15
+	negl %r15d
+	movq $1, %rcx # Init %rcx to 1, represents the offset to get the right subtraction minuends
+run_instruction_scan_right_three_loop:
+	# Do the mod3 arithmatic
+	decb %cl # Decrement %rcx by 1 to circle through to the next subtraction minuends
+	jns 1f # Jump if result was not -1
+	movb $2, %cl # Reset %rcx to 0
+1:
+	vmovdqu 192 + scan_subtraction_minuends(%rcx), %ymm0 # Load subtraction minuends with %rcx
+	
+	vmovdqu runtime_memory(%r13d), %ymm1 # Get next 32 bytes
+	vpsubusb %ymm1, %ymm0, %ymm1 # Subtract each byte from 1
+ 
+	# Nothing for the first extraction step, then a vpsrldq to get segment 2, then a vextracti128 to get segment 3 and 4, then a vpsrldq to get segment 4
+	scan_ymm1_for_0s addl, bsfq, run_instruction_scan_right_three_loop, "", "vpsrldq $8, %xmm1, %xmm2", "vextracti128 $1, %ymm1, %xmm3", "vpsrldq $8, %xmm3, %xmm4"
+	addl $INSTRUCTION_SIZE_SCAN_RIGHT_THREE, %r12d # Increment intermediate src pointer
+	addl %r13d, %r15d # Add new memory pointer to %r15 to get the movement
+	jmp run_loop
+
+run_instruction_scan_left_three:
+	movl %r13d, %r15d # Load -memory pointer into %r15
+	negl %r15d
+	movq $4, %rcx # Init %rcx to 1, represents the offset to get the right subtraction minuends
+run_instruction_scan_left_three_loop:
+	# Do the mod3 arithmatic
+	subb $2, %cl # Subtract 2 from %rcx to circle through to the next subtraction minuends
+	jns 1f # Jump if result was not -1 or -2
+	addb $3, %cl # Add 3 back to make the result positive again
+1:
+	vmovdqu 192 + scan_subtraction_minuends(%rcx), %ymm0 # Load subtraction minuends with %rcx
+	
+	vmovdqu runtime_memory - 31(%r13d), %ymm1 # Get next 32 bytes
+	vpsubusb %ymm1, %ymm0, %ymm4 # Subtract each byte from 1
+ 
+	# For the first extraction step do a vextracti128 and vpsrldq to get segment 3 and 4 of which we get segment 4, then nothing, then get segment 2, and then nothing
+	scan_ymm1_for_0s subl, bsrq, run_instruction_scan_left_three_loop, "vextracti128 $1, %ymm4, %xmm2 ; vpsrldq $8, %xmm2, %xmm1", "", "vpsrldq $8, %xmm4, %xmm3", ""
+	addl $INSTRUCTION_SIZE_SCAN_LEFT_THREE, %r12d # Increment intermediate src pointer
+	subl $7, %r13d # Decrement memory pointer by 1, since scan_ymm1_for_0s leaves it off by one in reverse
+	addl %r13d, %r15d # Add new memory pointer to %r15 to get the movement
+	jmp run_loop
+
+run_instruction_scan_manual:
+	movl %r13d, %r15d # Load -memory pointer into %r15
+	negl %r15d
+	shrq $8, %rcx # Get memory pointer offset
+	subl %ecx, %r13d
+run_instruction_scan_manual_loop:
+	addl %ecx, %r13d # Loop until a zeroed memory cell is found
+	cmpb $0, runtime_memory(%r13d)
+	jne run_instruction_scan_manual_loop
+
+	addl %r13d, %r15d # Add new memory pointer to %r15 to get the movement
+	addl $INSTRUCTION_SIZE_SCAN_MANUAL, %r12d
 	jmp run_loop
 
 run_instruction_plus:

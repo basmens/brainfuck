@@ -37,7 +37,7 @@ compile_time_out:
 usage_format: .asciz "usage: %s <filename>\n"
 
 # Program name, program size, intermediate src size, executed operations, time in nanos
-program_statistics_format: .asciz "\n\nMult loops;%s;%lu;%lu;%lu;%lu;%lu\n"
+program_statistics_format: .asciz "\n\nScan loops;%s;%lu;%lu;%lu;%lu;%lu\n"
 
 main_test:
 	pushq %rbp
