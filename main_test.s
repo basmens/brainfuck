@@ -32,7 +32,8 @@ compile_time_out:
 
 
 .text
-.equ TEST_REPETITION_COUNT, 1
+.equ TEST_REPETITION_COUNT, 10
+.equ TEST_WARMUP_COUNT, 10
 
 usage_format: .asciz "usage: %s <filename>\n"
 
@@ -66,22 +67,26 @@ main_test:
 	pushq $0 # Sleep 0 seconds
 	pushq $10000000 # And 10_00_000 nanoseconds
 
-	# Run repetition count times
-	movq $TEST_REPETITION_COUNT, -8(%rbp)
-test_loop:
-	# Call test
+	# Run warmup count times to warm up before doing the actual benchmark
+	movq $TEST_WARMUP_COUNT, -8(%rbp)
+warmup_loop:
 	movq -16(%rbp), %rdi
 	call test_once
-
-	# Sleep
-	movq $162, %rax # Nanosleep call
-	leaq -32(%rbp), %rdi
-	movq $0, %rsi
-	syscall
-
-	# Loop
 	decq -8(%rbp)
-	jnz test_loop
+	jnz warmup_loop
+
+	# Reset results
+	movq $0, executed_operations
+	movq $0, time_nanos_compiler
+	movq $0, time_nanos_runner
+
+	# Run repetition count times to benchmark
+	movq $TEST_REPETITION_COUNT, -8(%rbp)
+benchmark_loop:
+	movq -16(%rbp), %rdi
+	call test_once
+	decq -8(%rbp)
+	jnz benchmark_loop
 
 	# Divide executed operations, time nanos compiler and time nanos runner by repetition count
 	movq $TEST_REPETITION_COUNT, %rdi
@@ -167,11 +172,10 @@ test_once:
 	addq %rax, time_nanos_runner # Save into memory
 
 	# Reset brainfuck memory
-	movq $32048, %rcx
+	movq $95546, %rcx
 test_reset_loop:
-	subq $8, %rcx
-	movq $0, intermediate_src(%rcx)
-	jnz test_reset_loop
+	movb $0, intermediate_src - 8(%rcx)
+	loop test_reset_loop
 
 	movq %rbp, %rsp
 	popq %rbp
