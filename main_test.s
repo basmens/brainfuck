@@ -166,12 +166,13 @@ test_once:
 	subq compile_time_out + 8, %rax # Subtract begin stamp nanon from %rax
 	addq %rax, time_nanos_runner # Save into memory
 
+	# Doesn't work since executable memory optimization
 	# Reset brainfuck memory
-	movq $32048, %rcx
-test_reset_loop:
-	subq $8, %rcx
-	movq $0, intermediate_src(%rcx)
-	jnz test_reset_loop
+// 	movq $32048, %rcx
+// test_reset_loop:
+// 	subq $8, %rcx
+// 	movq $0, intermediate_src(%rcx)
+// 	jnz test_reset_loop
 
 	movq %rbp, %rsp
 	popq %rbp
