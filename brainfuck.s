@@ -86,6 +86,47 @@ compile_char_\char:
 	jmp *%rax # Jump to previous instruction
 .endm
 
+.macro read_repetitions reg_id
+1:
+	vmovdqu 1(%r14), %ymm4 # Load next 32 chars
+	vpxor %ymm4, %ymm\reg_id, %ymm4 # Subtract by mask, now only 1's remain where the char is not the char we are looking for
+	
+	movq %xmm4, %rax # Get first quad
+	cmpq $0, %rax # Check if all zero's, if so we can continue reading
+	jne 2f
+	addq $8, %r14 # Increment brainfuck source pointer
+
+	vpsrldq $8, %xmm4, %xmm5 # Get second quad
+	movq %xmm5, %rax
+	cmpq $0, %rax # Check if all zero's, if so we can continue reading
+	jne 2f
+	addq $8, %r14 # Increment brainfuck source pointer
+
+	vextracti128 $1, %ymm4, %xmm4 # Get third quad
+	movq %xmm4, %rax
+	cmpq $0, %rax # Check if all zero's, if so we can continue reading
+	jne 2f
+	addq $8, %r14 # Increment brainfuck source pointer
+	
+	vpsrldq $8, %xmm4, %xmm4 # Get fourth quad
+	movq %xmm4, %rax
+	cmpq $0, %rax # Check if all zero's, if so we can continue reading
+	jne 2f
+	addq $8, %r14 # Increment brainfuck source pointer
+	jmp 1b # Loop
+2:
+	bsfq %rax, %rax # Find first 1
+	shrq $3, %rax # Divide by 8 to get the byte of the 1
+	addq %rax, %r14 # Increment brainfuck source pointer by the number of bytes that were read
+.endm
+
+.align 32
+read_repetitions_init_table:
+	.quad 0x2B2B2B2B2B2B2B2B, 0x2B2B2B2B2B2B2B2B, 0x2B2B2B2B2B2B2B2B, 0x2B2B2B2B2B2B2B2B # +
+	.quad 0x2D2D2D2D2D2D2D2D, 0x2D2D2D2D2D2D2D2D, 0x2D2D2D2D2D2D2D2D, 0x2D2D2D2D2D2D2D2D # -
+	.quad 0x3E3E3E3E3E3E3E3E, 0x3E3E3E3E3E3E3E3E, 0x3E3E3E3E3E3E3E3E, 0x3E3E3E3E3E3E3E3E # >
+	.quad 0x3C3C3C3C3C3C3C3C, 0x3C3C3C3C3C3C3C3C, 0x3C3C3C3C3C3C3C3C, 0x3C3C3C3C3C3C3C3C # <
+
 brainfuck:
 	PROLOGUE
 
@@ -117,6 +158,12 @@ brainfuck:
 	movq %rsp, %rbp
 	pushq $0
 	pushq $0
+
+	# Init %ymm0 - 2 for reading repetitions
+	vmovdqa read_repetitions_init_table, %ymm0
+	vmovdqa read_repetitions_init_table + 32, %ymm1
+	vmovdqa read_repetitions_init_table + 64, %ymm2
+	vmovdqa read_repetitions_init_table + 96, %ymm3
 
 	# Init %r12-15 and rbx
 	movq $0, %r12
@@ -166,24 +213,70 @@ compile_char_left_repetition:
 	cmpq $compile_right, %r15 # Check if last instruction was a right
 	jne compile_char_left # Run last instruction and append a left instruction
 	decl %ebx # Decrement instruction repetition counter
+	addl %r14d, %ebx # Increment repetition counter by the current pointer
+	read_repetitions 3
+	subl %r14d, %ebx # Decrement repetition counter by the new pointer
 	jmp read_loop # Loop
 
 compile_char_right_repetition:
 	cmpq $compile_right, %r15 # Check if last instruction was a right
 	jne compile_char_right # Run last instruction and append a right instruction
 	incl %ebx # Increment instruction repetition counter
+	subl %r14d, %ebx # Decrement repetition counter by the current pointer
+	// read_repetitions 2
+
+1:
+	vmovdqu 1(%r14), %ymm4 # Load next 32 chars
+	vpxor %ymm4, %ymm2, %ymm4 # Subtract by mask, now only 1's remain where the char is not the char we are looking for
+	
+	movq %xmm4, %rax # Get first quad
+	cmpq $0, %rax # Check if all zero's, if so we can continue reading
+	jne 2f
+	addq $8, %r14 # Increment brainfuck source pointer
+
+	vpsrldq $8, %xmm4, %xmm5 # Get second quad
+	movq %xmm5, %rax
+	cmpq $0, %rax # Check if all zero's, if so we can continue reading
+	jne 2f
+	addq $8, %r14 # Increment brainfuck source pointer
+
+	vextracti128 $1, %ymm4, %xmm4 # Get third quad
+	movq %xmm4, %rax
+	cmpq $0, %rax # Check if all zero's, if so we can continue reading
+	jne 2f
+	addq $8, %r14 # Increment brainfuck source pointer
+	
+	vpsrldq $8, %xmm4, %xmm4 # Get fourth quad
+	movq %xmm4, %rax
+	cmpq $0, %rax # Check if all zero's, if so we can continue reading
+	jne 2f
+	addq $8, %r14 # Increment brainfuck source pointer
+	jmp 1b # Loop
+2:
+	bsfq %rax, %rax # Find first 1
+	shrq $3, %rax # Divide by 8 to get the byte of the 1
+	addq %rax, %r14 # Increment brainfuck source pointer by the number of bytes that were read
+
+
+	addl %r14d, %ebx # Increment repetition counter by the new pointer
 	jmp read_loop # Loop
 
 compile_char_minus_repetition:
 	cmpq $compile_plus, %r15 # Check if last instruction was a plus
 	jne compile_char_minus # Run last instruction and append a minus instruction
 	decb %bl # Decrement instruction repetition counter
+	addb %r14b, %bl # Increment repetition counter by the current pointer
+	read_repetitions 1
+	subb %r14b, %bl # Decrement repetition counter by the new pointer
 	jmp read_loop # Loop
 
 compile_char_plus_repetition:
 	cmpq $compile_plus, %r15 # Check if last instruction was a plus
 	jne compile_char_plus # Run last instruction and append a plus instruction
 	incb %bl # Increment instruction repetition counter
+	subb %r14b, %bl # Decrement repetition counter by the current pointer
+	read_repetitions 0
+	addb %r14b, %bl # Increment repetition counter by the new pointer
 	jmp read_loop # Loop
 
 compile_return:
