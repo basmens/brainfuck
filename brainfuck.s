@@ -131,8 +131,8 @@ brainfuck:
 	PROLOGUE
 
 	# Free up %r12-15 and rbx
-	push %r12 # -8  Becomes intermediate_src counter
-	push %r13 # -24 Becomes pointer to executable source block
+	push %r12 # -8
+	push %r13 # -24 Becomes executable source write pointer
 	push %r14 # -16 Becomes brainfuck source pointer
 	push %r15 # -32 Becomes last read instruction
 	push %rbx # -40 Becomes instruction repetition counter
@@ -149,10 +149,11 @@ brainfuck:
     movq $0, %r9       # Offset = 0
     syscall
 	movq %rax, %r13 # Save executable source block
+	push %r13 # -48 Save executable source block
 
-	# Each bracket frame contains 24 bytes. The first quad contain the previous %rbp. The next 4 are used to the address of the if statement. 
-	# The next 4 bytes are used to keep track of the total memory pointer movement. The last 4 bytes are used to keep track of some loop
-	# optimization possibilities.
+	# Each bracket frame contains 24 bytes. The first quad contain the previous %rbp. The second quad are used to store 
+	# the address of the if statement. The next 4 bytes are used to keep track of the total memory pointer movement. 
+	# The last 4 bytes are used to keep track of some loop optimization possibilities.
 	# Push first bracket frame
 	pushq %rbp
 	movq %rsp, %rbp
@@ -165,45 +166,60 @@ brainfuck:
 	vmovdqa read_repetitions_init_table + 64, %ymm2
 	vmovdqa read_repetitions_init_table + 96, %ymm3
 
-	# Init %r12-15 and rbx
-	movq $0, %r12
+	# Init loop variables
 	movq $read_loop, %r15 # Last read instruction
 	movq $0, %rbx # The instruction repetition counter
 	decq %r14 # Decrement brainfuck source by one to increment to 0 in loop
+	movb $0, %al
+read_loop_end_condition:
+	cmpb $-43, %al # This check can be skipped when reading most characters. Only if a non-brainfuck char is read
+	je compile_char_null # do we have to do this check
+
 read_loop:
 	# Get next char
 	incq %r14
-	movb (%r14), %al
+	movzb (%r14), %rax
 
-	# Check all the chars that can appear in the program
-	cmpb $0, %al	# Check for null termination character
-	je compile_char_null
-	cmpb $0x5b, %al	# Check for [
-	je compile_char_if
-	cmpb $0x5d, %al	# Check for ]
-	je compile_char_for
-	cmpb $0x3c, %al	# Check for <
-	je compile_char_left_repetition
-	cmpb $0x3e, %al	# Check for >
-	je compile_char_right_repetition
-	cmpb $0x2d, %al	# Check for -
-	je compile_char_minus_repetition
-	cmpb $0x2b, %al	# Check for +
-	je compile_char_plus_repetition
-	cmpb $0x2c, %al	# Check for ,
-	je compile_char_in
-	cmpb $0x2e, %al	# Check for .
-	je compile_char_out
-	jmp read_loop # If it is none of those chars, it is either a comment or whitespace, so just ignore it
+	# Index into jump table
+	subb $43, %al # Subtract + to narrow the bounds of the chars
+	testb $0xC0, %al
+	jnz read_loop_end_condition
+	shl $3, %rax
+	jmp *compile_char_jmp_table(%rax)
 
-	compile_char_simple if compile_if 1
-	compile_char_simple for compile_for 1
-	compile_char_simple left compile_right -1
-	compile_char_simple right compile_right 1
-	compile_char_simple minus compile_plus -1
-	compile_char_simple plus compile_plus 1
-	compile_char_simple in compile_in 1
-	compile_char_simple out compile_out 1
+compile_return:
+	# Write ret instruction
+	movb $0xC3, (%r13)
+
+	# Pop final bracket frame
+	movq %rbp, %rsp
+	popq %rbp
+
+	SET_INTERMEDIATE_SRC_SIZE_STAT # Comment out above
+	DECOMPILER # Comment out above
+	GET_TIME # Comment out above
+
+	# Call the executable source block
+	movq $runtime_memory, %r12
+	movq -48(%rbp), %r13 # Get start of executable source block
+	call *%r13
+
+	# Restore %r12-15 and %rbx
+	movq -8(%rbp), %r12
+	movq -16(%rbp), %r13
+	movq -24(%rbp), %r14
+	movq -32(%rbp), %r15
+	movq -40(%rbp), %rbx
+	EPILOGUE
+
+compile_char_simple if compile_if 1 # Also contains the labels
+compile_char_simple for compile_for 1
+compile_char_simple left compile_right -1
+compile_char_simple right compile_right 1
+compile_char_simple minus compile_plus -1
+compile_char_simple plus compile_plus 1
+compile_char_simple in compile_in 1
+compile_char_simple out compile_out 1
 
 compile_char_null:
 	decq %r14 # Decrement src ptr to guarantee that the next loop cicle will also read a null termination character
@@ -245,29 +261,71 @@ compile_char_plus_repetition:
 	addb %r14b, %bl # Increment repetition counter by the new pointer
 	jmp read_loop # Loop
 
-compile_return:
-	# Write ret instruction
-	movb $0xC3, (%r13, %r12)
-
-	# Pop final bracket frame
-	movq %rbp, %rsp
-	popq %rbp
-
-	SET_INTERMEDIATE_SRC_SIZE_STAT # Comment out above
-	DECOMPILER # Comment out above
-	GET_TIME # Comment out above
-
-	# Call the executable source block
-	movq $runtime_memory, %r12
-	call *%r13
-
-	# Restore %r12-15 and %rbx
-	movq -8(%rbp), %r12
-	movq -16(%rbp), %r13
-	movq -24(%rbp), %r14
-	movq -32(%rbp), %r15
-	movq -40(%rbp), %rbx
-	EPILOGUE
+compile_char_jmp_table:
+	.quad compile_char_plus_repetition 	# 0 +
+	.quad compile_char_in				# 1 ,
+	.quad compile_char_minus_repetition # 2 -
+	.quad compile_char_out		  # 3 .
+	.quad read_loop_end_condition # 4
+	.quad read_loop_end_condition # 5
+	.quad read_loop_end_condition # 6
+	.quad read_loop_end_condition # 7
+	.quad read_loop_end_condition # 8
+	.quad read_loop_end_condition # 9
+	.quad read_loop_end_condition # 10
+	.quad read_loop_end_condition # 11
+	.quad read_loop_end_condition # 12
+	.quad read_loop_end_condition # 13
+	.quad read_loop_end_condition # 14
+	.quad read_loop_end_condition # 15
+	.quad read_loop_end_condition # 16
+	.quad compile_char_left_repetition # 17 <
+	.quad read_loop_end_condition # 18
+	.quad compile_char_right_repetition # 19 >
+	.quad read_loop_end_condition # 20
+	.quad read_loop_end_condition # 21
+	.quad read_loop_end_condition # 22
+	.quad read_loop_end_condition # 23
+	.quad read_loop_end_condition # 24
+	.quad read_loop_end_condition # 25
+	.quad read_loop_end_condition # 26
+	.quad read_loop_end_condition # 27
+	.quad read_loop_end_condition # 28
+	.quad read_loop_end_condition # 29
+	.quad read_loop_end_condition # 30
+	.quad read_loop_end_condition # 31
+	.quad read_loop_end_condition # 32
+	.quad read_loop_end_condition # 33
+	.quad read_loop_end_condition # 34
+	.quad read_loop_end_condition # 35
+	.quad read_loop_end_condition # 36
+	.quad read_loop_end_condition # 37
+	.quad read_loop_end_condition # 38
+	.quad read_loop_end_condition # 39
+	.quad read_loop_end_condition # 40
+	.quad read_loop_end_condition # 41
+	.quad read_loop_end_condition # 42
+	.quad read_loop_end_condition # 43
+	.quad read_loop_end_condition # 44
+	.quad read_loop_end_condition # 45
+	.quad read_loop_end_condition # 46
+	.quad read_loop_end_condition # 47
+	.quad compile_char_if		  # 48 [
+	.quad read_loop_end_condition # 49
+	.quad compile_char_for		  # 50 ]
+	.quad read_loop_end_condition # 51
+	.quad read_loop_end_condition # 52
+	.quad read_loop_end_condition # 53
+	.quad read_loop_end_condition # 54
+	.quad read_loop_end_condition # 55
+	.quad read_loop_end_condition # 56
+	.quad read_loop_end_condition # 57
+	.quad read_loop_end_condition # 58
+	.quad read_loop_end_condition # 59
+	.quad read_loop_end_condition # 60
+	.quad read_loop_end_condition # 61
+	.quad read_loop_end_condition # 62
+	.quad read_loop_end_condition # 63
 
 
 ##############################################################################################################################################
@@ -278,9 +336,9 @@ compile_return:
 	#0 41 81 C4 .skip 4 (amount)		addl $amount, %r12
 */
 .macro write_instruction_right amount
-	movl $0x00C48141, (%r13, %r12)
-	movl \amount, 3(%r13, %r12)
-	addq $INSTRUCTION_SIZE_RIGHT, %r12
+	movl $0x00C48141, (%r13)
+	movl \amount, 3(%r13)
+	addq $INSTRUCTION_SIZE_RIGHT, %r13
 .endm
 
 .equ INSTRUCTION_SIZE_PLUS, 9
@@ -288,10 +346,10 @@ compile_return:
 	#0 41 80 84 24 .skip 4 (address) .skip 1 (amount)		addq amount, address(%r12)
 */
 .macro write_instruction_plus amount, address
-	movq $0x24848041, (%r13, %r12)
-	movl \address, 4(%r13, %r12)
-	movb \amount, 8(%r13, %r12)
-	addq $INSTRUCTION_SIZE_PLUS, %r12
+	movq $0x24848041, (%r13)
+	movl \address, 4(%r13)
+	movb \amount, 8(%r13)
+	addq $INSTRUCTION_SIZE_PLUS, %r13
 .endm
 
 .equ INSTRUCTION_SIZE_IN, 13
@@ -300,16 +358,15 @@ compile_return:
 	#5 41 88 84 24 .skip 4 (address)		movb %al, address(%r12)
 */
 .macro write_instruction_in address
-	movb $0xE8, (%r13, %r12)
-	movl $0x24848841, 5(%r13, %r12)
-	movl \address, 9(%r13, %r12)
+	movb $0xE8, (%r13)
+	movl $0x24848841, 5(%r13)
+	movl \address, 9(%r13)
 
 	# Calculate address offset
 	movl $getchar - 5, %eax # Get target address minus index of first byte after call
-	subl %r12d, %eax # Get offset from start of this instruction write
 	subl %r13d, %eax # Get offset from start of executable memory
-	movl %eax, 1(%r13, %r12) # Insert address offset into instruction
-	addq $INSTRUCTION_SIZE_IN, %r12
+	movl %eax, 1(%r13) # Insert address offset into instruction
+	addq $INSTRUCTION_SIZE_IN, %r13
 .endm
 
 .equ INSTRUCTION_SIZE_OUT, 13
@@ -318,16 +375,15 @@ compile_return:
 	#8 E8 .skip 4 (address offset)			call putchar
 */
 .macro write_instruction_out address
-	movl $0x24BC8A41, (%r13, %r12)
-	movl \address, 4(%r13, %r12)
-	movb $0xE8, 8(%r13, %r12)
+	movl $0x24BC8A41, (%r13)
+	movl \address, 4(%r13)
+	movb $0xE8, 8(%r13)
 
 	# Calculate address offset
 	movl $putchar - 13, %eax # Get target address minus index of first byte after call
-	subl %r12d, %eax # Get offset from start of this instruction write
 	subl %r13d, %eax # Get offset from start of executable memory
-	movl %eax, 9(%r13, %r12) # Insert address offset into instruction
-	addq $INSTRUCTION_SIZE_OUT, %r12
+	movl %eax, 9(%r13) # Insert address offset into instruction
+	addq $INSTRUCTION_SIZE_OUT, %r13
 .endm
 
 .equ INSTRUCTION_SIZE_IF, 11
@@ -336,9 +392,9 @@ compile_return:
 	#5 0F 84 .skip 4 (address offset)	je(long jump) address
 */
 .macro write_instruction_if
-	movl $0x243C8041, (%r13, %r12)
-	movl $0x00840F00, 4(%r13, %r12)
-	addq $INSTRUCTION_SIZE_IF, %r12
+	movl $0x243C8041, (%r13)
+	movl $0x00840F00, 4(%r13)
+	addq $INSTRUCTION_SIZE_IF, %r13
 .endm
 
 .equ INSTRUCTION_SIZE_FOR, 11
@@ -347,9 +403,9 @@ compile_return:
 	#5 0F 85 .skip 4 (address offset)	jne(long jump) address
 */
 .macro write_instruction_for
-	movl $0x243C8041, (%r13, %r12)
-	movl $0x00850F00, 4(%r13, %r12)
-	addq $INSTRUCTION_SIZE_FOR, %r12
+	movl $0x243C8041, (%r13)
+	movl $0x00850F00, 4(%r13)
+	addq $INSTRUCTION_SIZE_FOR, %r13
 .endm
 
 
@@ -357,9 +413,9 @@ compile_return:
 # Writes the jump offset at source to be the offset to dest
 .macro write_jump_offset from, static_offset_write, dest
 	# Calculate address offset
-	movl \dest, %eax # Get target
-	subl \from, %eax # Subtract source
-	movl %eax, \static_offset_write(%r13d, \from)
+	movq \dest, %rax # Get target
+	subq \from, %rax # Subtract source
+	movl %eax, \static_offset_write(\from)
 .endm
 
 
@@ -372,11 +428,11 @@ compile_return:
 # Compile
 ##############################################################################################################################################
 .macro compile_pop_mem_movement
-	movl -4(%rbp), %eax # Get memory pointer offset from bracket frame
+	movl -12(%rbp), %eax # Get memory pointer offset from bracket frame
 	cmpl $0, %eax # If memory pointer offset is 0, skip
 	je 1f
 
-	movl $0, -4(%rbp) # Make memory pointer offset 0
+	movl $0, -12(%rbp) # Make memory pointer offset 0
 	write_instruction_right %eax # Write instruction
 1:
 .endm
@@ -405,13 +461,9 @@ compile_if:
 
 	pushq %rbp
 	movq %rsp, %rbp
-	pushq %r12 # Push new empty bracket frame
+	pushq %r13 # Push new empty bracket frame
 	pushq $0
-	// write_instruction_if
-	movl $0x243C8041, (%r13, %r12)
-	view:
-	movl $0x00840F00, 4(%r13, %r12)
-	addq $INSTRUCTION_SIZE_IF, %r12
+	write_instruction_if
 
 	jmp read_loop
 
@@ -574,38 +626,38 @@ compile_for_no_optimizations:
 
 	write_instruction_for
 
-	movl -8(%rbp), %edx # Get address of if instruction
-	addl $INSTRUCTION_SIZE_IF, %edx # Move address to instruction after if
-	write_jump_offset %r12d, -4, %edx
-	write_jump_offset %edx, -4, %r12d
+	movq -8(%rbp), %rdx # Get address of if instruction
+	addq $INSTRUCTION_SIZE_IF, %rdx # Move address to instruction after if
+	write_jump_offset %r13, -4, %rdx
+	write_jump_offset %rdx, -4, %r13
 
 	movq %rbp, %rsp # Pop bracket frame
 	popq %rbp
 
-	orl $LOOP_CONTAINS_LOOP, -12(%rbp) # Loop contains a inner loop
+	orl $LOOP_CONTAINS_LOOP, -16(%rbp) # Loop contains a inner loop
 	jmp read_loop
 
 compile_right:
-	addl %edx, -4(%rbp) # Increment memory pointer offset in bracket frame
-	orl $LOOP_CONTAINS_RIGHT, -12(%rbp) # Loop contains a right instruction
+	addl %edx, -12(%rbp) # Increment memory pointer offset in bracket frame
+	orl $LOOP_CONTAINS_RIGHT, -16(%rbp) # Loop contains a right instruction
 	jmp read_loop
 
 compile_plus:
-	movl -4(%rbp), %eax # Get offset from memory pointer
+	movl -12(%rbp), %eax # Get offset from memory pointer
 	write_instruction_plus %dl %eax
-	orl $LOOP_CONTAINS_PLUS, -12(%rbp) # Loop contains a plus instruction
+	orl $LOOP_CONTAINS_PLUS, -16(%rbp) # Loop contains a plus instruction
 	jmp read_loop
 
 compile_in:
-	movl -4(%rbp), %eax # Get offset from memory pointer
+	movl -12(%rbp), %eax # Get offset from memory pointer
 	write_instruction_in %eax
-	orl $LOOP_CONTAINS_IN, -12(%rbp) # Loop contains a in instruction
+	orl $LOOP_CONTAINS_IN, -16(%rbp) # Loop contains a in instruction
 	jmp read_loop
 
 compile_out:
-	movl -4(%rbp), %eax # Get offset from memory pointer
+	movl -12(%rbp), %eax # Get offset from memory pointer
 	write_instruction_out %eax
-	orl $LOOP_CONTAINS_OUT, -12(%rbp) # Loop contains a out instruction
+	orl $LOOP_CONTAINS_OUT, -16(%rbp) # Loop contains a out instruction
 	jmp read_loop
 
 
