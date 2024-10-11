@@ -67,6 +67,7 @@ decomile_intermediate_src:
 .data
 .align 8
 runtime_memory: .skip 30000, 0
+output_buffer: .skip 30000, 0
 
 .text
 
@@ -151,6 +152,10 @@ brainfuck:
 	movq %rax, %r13 # Save executable source block
 	push %r13 # -48 Save executable source block
 
+	# Write 'xor %r13, %r13' into executable memory as first instruction
+	movl $0x00ED314D, (%r13)
+	addq $3, %r13 # Increment executable source block
+
 	# Each bracket frame contains 24 bytes. The first quad contain the previous %rbp. The second quad are used to store 
 	# the address of the if statement. The next 4 bytes are used to keep track of the total memory pointer movement. 
 	# The last 4 bytes are used to keep track of some loop optimization possibilities.
@@ -199,10 +204,18 @@ compile_return:
 	DECOMPILER # Comment out above
 	GET_TIME # Comment out above
 
+	# For the run part, %r12 will contain the memory pointer and %r13 will contain the output length counter.
 	# Call the executable source block
 	movq $runtime_memory, %r12
 	movq -48(%rbp), %r13 # Get start of executable source block
 	call *%r13
+
+	# Print output
+	movq $1, %rax
+	movq $1, %rdi
+	movq $output_buffer, %rsi
+	movq %r13, %rdx
+	syscall
 
 	# Restore %r12-15 and %rbx
 	movq -8(%rbp), %r12
@@ -352,37 +365,51 @@ compile_char_jmp_table:
 	addq $INSTRUCTION_SIZE_PLUS, %r13
 .endm
 
-.equ INSTRUCTION_SIZE_IN, 13
+.equ INSTRUCTION_SIZE_IN, 38
 /*
-	#0 E8 .skip 4 (address offset)			call getchar
-	#5 41 88 84 24 .skip 4 (address)		movb %al, address(%r12)
+    #0  48 C7 C0 01 00 00 00				movq $1, %rax
+    #7  48 89 C7							movq %rax, %rdi
+    #10 48 C7 C6 .long output_buffer		movq $output_buffer, %rsi
+    #17 4C 89 EA							movq %r13, %rdx
+    #20 0F 05                               syscall
+	#22 4D 31 ED							xorq %r13, %r13
+
+	#25 E8 .skip 4 (address offset)			call getchar
+	#30 41 88 84 24 .skip 4 (address)		movb %al, address(%r12)
 */
 .macro write_instruction_in address
-	movb $0xE8, (%r13)
-	movl $0x24848841, 5(%r13)
-	movl \address, 9(%r13)
+	# Print everything in the output buffer to this point
+	movl $0x01C0C748, (%r13)
+	movl $0x48000000, 4(%r13)
+	movl $0xC748C789, 8(%r13)
+	movb $0xC6, 12(%r13)
+	movl $output_buffer, 13(%r13)
+	movl $0x0FEA894C, 17(%r13)
+	movl $0xED314D05, 21(%r13)
+
+	movb $0xE8, 25(%r13)
+	movl $0x24848841, 30(%r13)
+	movl \address, 34(%r13)
 
 	# Calculate address offset
-	movl $getchar - 5, %eax # Get target address minus index of first byte after call
+	movl $getchar - 30, %eax # Get target address minus index of first byte after call
 	subl %r13d, %eax # Get offset from start of executable memory
-	movl %eax, 1(%r13) # Insert address offset into instruction
+	movl %eax, 26(%r13) # Insert address offset into instruction
 	addq $INSTRUCTION_SIZE_IN, %r13
 .endm
 
-.equ INSTRUCTION_SIZE_OUT, 13
+.equ INSTRUCTION_SIZE_OUT, 18
 /*
-	#0 41 8A BC 24 .skip 4 (address)		movb address(%r12), %dil
-	#8 E8 .skip 4 (address offset)			call putchar
+	#0  41 8A 84 24 .skip 4 (address)		movb address(%r12), %al
+	#8  41 88 85 .long output_buffer		movb %al, output_buffer(%r13)
+	#15 49 FF C5							incq %r13
 */
 .macro write_instruction_out address
-	movl $0x24BC8A41, (%r13)
+	movl $0x24848A41, (%r13)
 	movl \address, 4(%r13)
-	movb $0xE8, 8(%r13)
-
-	# Calculate address offset
-	movl $putchar - 13, %eax # Get target address minus index of first byte after call
-	subl %r13d, %eax # Get offset from start of executable memory
-	movl %eax, 9(%r13) # Insert address offset into instruction
+	movl $0x00858841, 8(%r13)
+	movl $output_buffer, 11(%r13)
+	movl $0x00C5FF49, 15(%r13)
 	addq $INSTRUCTION_SIZE_OUT, %r13
 .endm
 
