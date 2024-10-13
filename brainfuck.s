@@ -1,6 +1,6 @@
 .global brainfuck
-.global putchar # Tell the linker to link these two symbols so that the
-.global getchar # executable memory can use them
+.global runtime_memory
+.global getchar # Tell the linker to link this symbol so that the executable memory can use it
 .text
 
 # Prologue and epilogue
@@ -18,18 +18,18 @@
 
 # Comment out here to switch off statistics
 .macro SET_INTERMEDIATE_SRC_SIZE_STAT
-	// movq %r12, intermediate_src_size
+	movq %r12, intermediate_src_size
 .endm
 
 .macro INCR_EXECUTED_OPERATIONS_STAT
-	// incq executed_operations
+	incq executed_operations
 .endm
 
 .macro GET_TIME
-	// movq $228, %rax # clock_gettime
-	// movq $0, %rdi
-	// movq $compile_time_out, %rsi
-	// syscall
+	movq $228, %rax # clock_gettime
+	movq $0, %rdi
+	movq $compile_time_out, %rsi
+	syscall
 .endm
 
 # Comment out here to switch on/off decompiling

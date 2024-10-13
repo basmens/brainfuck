@@ -32,8 +32,8 @@ compile_time_out:
 
 
 .text
-.equ TEST_REPETITION_COUNT, 10
-.equ TEST_WARMUP_COUNT, 10
+.equ TEST_REPETITION_COUNT, 1
+.equ TEST_WARMUP_COUNT, 0
 
 usage_format: .asciz "usage: %s <filename>\n"
 
@@ -63,12 +63,10 @@ main_test:
 	jz failed
 	movq %rax, -16(%rbp)
 
-	# Prepare sleep structure
-	pushq $0 # Sleep 0 seconds
-	pushq $10000000 # And 10_00_000 nanoseconds
-
 	# Run warmup count times to warm up before doing the actual benchmark
 	movq $TEST_WARMUP_COUNT, -8(%rbp)
+	cmpq $0, -8(%rbp)
+	je skip_warmup
 warmup_loop:
 	movq -16(%rbp), %rdi
 	call test_once
@@ -79,6 +77,7 @@ warmup_loop:
 	movq $0, executed_operations
 	movq $0, time_nanos_compiler
 	movq $0, time_nanos_runner
+skip_warmup:
 
 	# Run repetition count times to benchmark
 	movq $TEST_REPETITION_COUNT, -8(%rbp)
@@ -171,13 +170,11 @@ test_once:
 	subq compile_time_out + 8, %rax # Subtract begin stamp nanon from %rax
 	addq %rax, time_nanos_runner # Save into memory
 
-	# Doesn't work since executable memory optimization
 	# Reset brainfuck memory
-// 	movq $32048, %rcx
-// test_reset_loop:
-// 	subq $8, %rcx
-// 	movq $0, intermediate_src(%rcx)
-// 	jnz test_reset_loop
+	movq $30000, %rcx
+test_reset_loop:
+	movb $0, runtime_memory - 1(%rcx)
+	loop test_reset_loop
 
 	movq %rbp, %rsp
 	popq %rbp
