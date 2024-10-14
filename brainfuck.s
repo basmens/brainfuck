@@ -18,18 +18,18 @@
 
 # Comment out here to switch off statistics
 .macro SET_INTERMEDIATE_SRC_SIZE_STAT
-	movq %r12, intermediate_src_size
+	// movq %r12, intermediate_src_size
 .endm
 
 .macro INCR_EXECUTED_OPERATIONS_STAT
-	incq executed_operations
+	// incq executed_operations
 .endm
 
 .macro GET_TIME
-	movq $228, %rax # clock_gettime
-	movq $0, %rdi
-	movq $compile_time_out, %rsi
-	syscall
+	// movq $228, %rax # clock_gettime
+	// movq $0, %rdi
+	// movq $compile_time_out, %rsi
+	// syscall
 .endm
 
 # Comment out here to switch on/off decompiling
@@ -345,9 +345,9 @@ compile_char_jmp_table:
 # Write instruction
 ##############################################################################################################################################
 .equ INSTRUCTION_SIZE_RIGHT, 7
-/*
-	#0 41 81 C4 .skip 4 (amount)		addl $amount, %r12
-*/
+.align 8
+byte_code_right:
+	.byte 0x41, 0x81, 0xC4, 0x00, 0x00, 0x00, 0x00					#0 addl $amount, %r12
 .macro write_instruction_right amount
 	movl $0x00C48141, (%r13)
 	movl \amount, 3(%r13)
@@ -355,9 +355,9 @@ compile_char_jmp_table:
 .endm
 
 .equ INSTRUCTION_SIZE_PLUS, 9
-/*
-	#0 41 80 84 24 .skip 4 (address) .skip 1 (amount)		addq amount, address(%r12)
-*/
+.align 8
+byte_code_plus:
+	.byte 0x41, 0x80, 0x84, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00		#0 addq amount, address(%r12)
 .macro write_instruction_plus amount, address
 	movq $0x24848041, (%r13)
 	movl \address, 4(%r13)
@@ -366,29 +366,25 @@ compile_char_jmp_table:
 .endm
 
 .equ INSTRUCTION_SIZE_IN, 38
-/*
-    #0  48 C7 C0 01 00 00 00				movq $1, %rax
-    #7  48 89 C7							movq %rax, %rdi
-    #10 48 C7 C6 .long output_buffer		movq $output_buffer, %rsi
-    #17 4C 89 EA							movq %r13, %rdx
-    #20 0F 05                               syscall
-	#22 4D 31 ED							xorq %r13, %r13
+.align 8
+byte_code_in:
+    .byte 0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00			#0  movq $1, %rax
+    .byte 0x48, 0x89, 0xC7									#7  movq %rax, %rdi
+    .byte 0x48, 0xC7, 0xC6; .long output_buffer				#10 movq $output_buffer, %rsi
+    .byte 0x4C, 0x89, 0xEA									#17 movq %r13, %rdx
+    .byte 0x0F, 0x05										#20 syscall
+	.byte 0x4D, 0x31, 0xED									#22 xorq %r13, %r13
 
-	#25 E8 .skip 4 (address offset)			call getchar
-	#30 41 88 84 24 .skip 4 (address)		movb %al, address(%r12)
-*/
+	.byte 0xE8, 0x00, 0x00, 0x00, 0x00						#25 call getchar
+	.byte 0x41, 0x88, 0x84, 0x24, 0x00, 0x00, 0x00, 0x00	#30 movb %al, address(%r12)
 .macro write_instruction_in address
 	# Print everything in the output buffer to this point
-	movl $0x01C0C748, (%r13)
-	movl $0x48000000, 4(%r13)
-	movl $0xC748C789, 8(%r13)
-	movb $0xC6, 12(%r13)
+	movq $5, %rcx # Quad count
+	movq %r13, %rdi # Destination
+	movq $byte_code_in, %rsi # Source
+	rep movsq
+	
 	movl $output_buffer, 13(%r13)
-	movl $0x0FEA894C, 17(%r13)
-	movl $0xED314D05, 21(%r13)
-
-	movb $0xE8, 25(%r13)
-	movl $0x24848841, 30(%r13)
 	movl \address, 34(%r13)
 
 	# Calculate address offset
@@ -399,11 +395,11 @@ compile_char_jmp_table:
 .endm
 
 .equ INSTRUCTION_SIZE_OUT, 18
-/*
-	#0  41 8A 84 24 .skip 4 (address)		movb address(%r12), %al
-	#8  41 88 85 .long output_buffer		movb %al, output_buffer(%r13)
-	#15 49 FF C5							incq %r13
-*/
+.align 8
+byte_code_out:
+	.byte 0x41, 0x8A, 0x84, 0x24, 0x00, 0x00, 0x00, 0x00		#0  movb address(%r12), %al
+	.byte 0x41, 0x88, 0x85; .long output_buffer					#8  movb %al, output_buffer(%r13)
+	.byte 0x49, 0xFF, 0xC5										#15 incq %r13
 .macro write_instruction_out address
 	movl $0x24848A41, (%r13)
 	movl \address, 4(%r13)
@@ -414,10 +410,10 @@ compile_char_jmp_table:
 .endm
 
 .equ INSTRUCTION_SIZE_IF, 11
-/*
-	#0 41 80 3C 24 00					cmpb $0, (%r12)
-	#5 0F 84 .skip 4 (address offset)	je(long jump) address
-*/
+.align 8
+byte_code_if:
+	.byte 0x41, 0x80, 0x3C, 0x24, 0x00					#0 cmpb $0, (%r12)
+	.byte 0x0F, 0x84, 0x00, 0x00, 0x00, 0x00			#5 je(long jump) address
 .macro write_instruction_if
 	movl $0x243C8041, (%r13)
 	movl $0x00840F00, 4(%r13)
@@ -425,10 +421,10 @@ compile_char_jmp_table:
 .endm
 
 .equ INSTRUCTION_SIZE_FOR, 11
-/*
-	#0 41 80 3C 24 00					cmpb $0, (%r12)
-	#5 0F 85 .skip 4 (address offset)	jne(long jump) address
-*/
+.align 8
+byte_code_for:
+	.byte 0x41,0x80, 0x3C, 0x24, 0x00					#0 cmpb $0, (%r12)
+	.byte 0x0F,0x85, 0x00, 0x00, 0x00, 0x00				#5 jne(long jump) address
 .macro write_instruction_for
 	movl $0x243C8041, (%r13)
 	movl $0x00850F00, 4(%r13)
@@ -436,16 +432,15 @@ compile_char_jmp_table:
 .endm
 
 .equ INSTRUCTION_SIZE_SET, 9
-/*
-	#0 41 C6 84 24 .skip 4 (address). skip 1 (amount)	movb $amount, address(%r12)
-*/
+.align 8
+byte_code_set:
+	.byte 0x41, 0xC6, 0x84, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00			#0 movb $amount, address(%r12)
 .macro write_instruction_set amount address
 	movl $0x2484C641, (%r13)
 	movl \address, 4(%r13)
 	movb $\amount, 8(%r13)
 	addq $INSTRUCTION_SIZE_SET, %r13
 .endm
-
 
 
 # Writes the jump offset at source to be the offset to dest
@@ -458,9 +453,9 @@ compile_char_jmp_table:
 
 ################################## Load loop count ##################################
 .equ INSTRUCTION_SIZE_LOAD, 8
-/*
-	#0 45 8A B4 24 .skip 4 (address)		movb address(%r12), %r14b
-*/
+.align 8
+byte_code_load:
+	.byte 0x45, 0x8A, 0xB4, 0x24, 0x00, 0x00, 0x00, 0x00				#0 movb address(%r12), %r14b
 .macro write_instruction_load address
 	movl $0x24B48A45, (%r13)
 	movl \address, 4(%r13)
@@ -468,34 +463,33 @@ compile_char_jmp_table:
 .endm
 
 .equ INSTRUCTION_SIZE_NEG_LOADED, 3
-/*
-	#8 41 F6 DE								negb %r14b
-*/
+.align 8
+byte_code_load_neg_loaded:
+	.byte 0x41, 0xF6, 0xDE								#0 negb %r14b
 .macro write_instruction_neg_loaded address
 	movl $0x00DEF641, 8(%r13)
 	addq $INSTRUCTION_SIZE_NEG_LOADED, %r13
 .endm
 
 .equ INSTRUCTION_SIZE_LOAD_POW2, 26
-/*
-	#0  41 F6 C6 .skip 1 (test_mask)		testb $test_mask, %r14b
-	#4  74 10								jz 1f
-	#6  48 C7 C0 3C 00 00 00				movq $60, %rax (Exit)
-	#13 48 C7 C7 0A 00 00 00				movq $10, %rdi
-	#20 0F 05                               syscall
-	#22 41 C0 EE .skip 1 (shift_count)		1: shrb $shift_count, %r14b
-*/
+.align 8
+byte_code_load_pow2:
+	.byte 0x41, 0xF6, 0xC6, 0x00						#0  testb $test_mask, %r14b
+	.byte 0x74, 0x10									#4  jz 1f
+	.byte 0x48, 0xC7, 0xC0, 0x3C, 0x00, 0x00, 0x00		#6  movq $60, %rax (Exit)
+	.byte 0x48, 0xC7, 0xC7, 0x0A, 0x00, 0x00, 0x00		#13 movq $10, %rdi
+	.byte 0x0F, 0x05									#20 syscall
+	.byte 0x41, 0xC0, 0xEE, 0x00						#22 1: shrb $shift_count, %r14b
+	.byte 0x00, 0x00, 0x00, 0x00, 0x00, 0x00			# Padding
 .macro write_instruction_load_pow2 add_count
-	movl $0x00C6F641, (%r13)
+	movq $4, %rcx # Quad count
+	movq %r13, %rdi # Destination
+	movq $byte_code_load_pow2, %rsi # Source
+	rep movsq
+
 	decb \add_count # Get test mask
 	movb \add_count, 3(%r13)
 	incb \add_count # Restore
-	movl $0xC7481074, 4(%r13)
-	movl $0x00003CC0, 8(%r13)
-	movl $0xC7C74800, 12(%r13)
-	movl $0x0000000A, 16(%r13)
-	movl $0xC041050F, 20(%r13)
-	movb $0xEE, 24(%r13)
 	movzb \add_count, %r8w
 	bsfw %r8w, %r8w # Get shift count
 	movb %r8b, 25(%r13)
@@ -503,29 +497,27 @@ compile_char_jmp_table:
 .endm
 
 .equ INSTRUCTION_SIZE_LOAD_LOOP_COUNT_SCAN, 29
-/*
-	#0  44 88 F0							movb %r14b, %al
-	#3  B1 .skip 1 (add_count)				movb $add_count, %cl
-	#5  45 30 F6							xorb %r14b, %r14b
-	#8  B4 00								1: movb $0, %ah
-	#10 F6 F1								divb %cl
-	#12 41 00 C6							addb %al, %r14b
-	#15 80 FC 00							cmpb $0, %ah
-	#18 74 09								je 1f
-	#20 88 E0								movb %ah, %al
-	#22 28 C8								subb %cl, %al
-	#24 41 FE C6							incb %r14b
-	#27 EB EB								jmp 1b 1:
-*/
+.align 8
+byte_code_load_loop_count_scan:
+	.byte 0x44, 0x88, 0xF0						#0  movb %r14b, %al
+	.byte 0xB1, 0x00							#3  movb $add_count, %cl
+	.byte 0x45, 0x30, 0xF6						#5  xorb %r14b, %r14b
+	.byte 0xB4, 0x00							#8  1: movb $0, %ah
+	.byte 0xF6, 0xF1							#10 divb %cl
+	.byte 0x41, 0x00, 0xC6						#12 addb %al, %r14b
+	.byte 0x80, 0xFC, 0x00						#15 cmpb $0, %ah
+	.byte 0x74, 0x09							#18 je 1f
+	.byte 0x88, 0xE0							#20 movb %ah, %al
+	.byte 0x28, 0xC8							#22 subb %cl, %al
+	.byte 0x41, 0xFE, 0xC6						#24 incb %r14b
+	.byte 0xEB, 0xEB							#27 jmp 1b 1:
+	.byte 0x00, 0x00, 0x00						# Padding
 .macro write_instruction_load_loop_count_scan add_count
-	movl $0xB1F08844, (%r13)
+	movq $4, %rcx # Quad count
+	movq %r13, %rdi # Destination
+	movq $byte_code_load_loop_count_scan, %rsi # Source
+	rep movsq
 	movb \add_count, 4(%r13)
-	movl $0xB4F63045, 5(%r13)
-	movl $0x41F1F600, 9(%r13)
-	movl $0xFC80C600, 13(%r13)
-	movl $0x88097400, 17(%r13)
-	movl $0x41C828E0, 21(%r13)
-	movl $0xEBEBC6FE, 25(%r13)
 	addq $INSTRUCTION_SIZE_LOAD_LOOP_COUNT_SCAN, %r13
 .endm
 
@@ -566,9 +558,9 @@ compile_char_jmp_table:
 
 ################################## Mult add ##################################
 .equ INSTRUCTION_SIZE_ADD, 8
-/*
-	#0 45 00 B4 24 .skip 4 (address)			addb %r14b, address(%r12)
-*/
+.align 8
+byte_code_add:
+	.byte 0x45, 0x00, 0xB4, 0x24, 0x00, 0x00, 0x00, 0x00	#0 addb %r14b, address(%r12)
 .macro write_instruction_add address
 	movl $0x24B40045, (%r13)
 	movl \address, 4(%r13)
@@ -576,11 +568,11 @@ compile_char_jmp_table:
 .endm
 
 .equ INSTRUCTION_SIZE_MULT_ADD_POW2, 14
-/*
-	#0 44 88 F0									movb %r14b, %al
-	#3 C0 E0 .skip 1 (shift_count)				shlb $shift_count, %al
-	#6 41 00 84 24 .skip 4 (address)			addb %al, address(%r12)
-*/
+.align 8
+byte_code_mult_add_pow2:
+	.byte 0x44, 0x88, 0xF0									#0 movb %r14b, %al
+	.byte 0xC0, 0xE0, 0x00									#3 shlb $shift_count, %al
+	.byte 0x41, 0x00, 0x84, 0x24, 0x00, 0x00, 0x00, 0x00	#6 addb %al, address(%r12)
 .macro write_instruction_mult_add_pow2 amount, address
 	movzb \amount, %r8w
 	bsfw %r8w, %r8w # Get shift count
@@ -593,11 +585,11 @@ compile_char_jmp_table:
 .endm
 
 .equ INSTRUCTION_SIZE_MULT_ADD, 13
-/*
-	#0 B0 .skip 1 (amount)						movb $amount, %al
-	#2 41 F6 E6									mulb %r14b
-	#5 41 00 84 24 .skip 4 (address)			addb %al, address(%r12)
-*/
+.align 8
+byte_code_mult_add:
+	.byte 0xB0, 0x00										#0 movb $amount, %al
+	.byte 0x41, 0xF6, 0xE6									#2 mulb %r14b
+	.byte 0x41, 0x00, 0x84, 0x24, 0x00, 0x00, 0x00, 0x00	#5 addb %al, address(%r12)
 .macro write_instruction_mult_add amount, address
 	movl $0xF64100B0, (%r13)
 	movb \amount, 1(%r13)
@@ -640,6 +632,272 @@ compile_char_jmp_table:
 	cmpb $0, \amount
 	jge 3f
 	movb $0x28, -7(%r13) # Make addition into a subtraction
+3:
+.endm
+
+################################## Scan ##################################
+.equ INSTRUCTION_SIZE_SCAN_LOOP, 21
+.align 8
+byte_code_scan_right_loop:
+	.byte 0x49, 0x81, 0xEC, 0x00, 0x00, 0x00, 0x00		#0  subq $right_count, %r12
+	.byte 0x49, 0x81, 0xC4, 0x00, 0x00, 0x00, 0x00		#7  1: addq $right_count, %r12
+	.byte 0x41, 0x80, 0x3C, 0x24, 0x00					#14 cmpb $0, (%r12)
+	.byte 0x75, 0xF2									#19 jne 1b
+	.byte 0x00, 0x00, 0x00								# Padding
+.macro write_instruction_scan_loop right_count
+	movq $3, %rcx # Quad count
+	movq %r13, %rdi # Destination
+	movq $byte_code_scan_right_loop, %rsi # Source
+	rep movsq
+	movl \right_count, 3(%r13)
+	movl \right_count, 10(%r13)
+	addq $INSTRUCTION_SIZE_SCAN_LOOP, %r13
+.endm
+
+.align 32
+scan_subtraction_minuends_right:
+	.quad 0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x0000000000000000 # 0
+	.quad 0x0101010101010101, 0x0101010101010101, 0x0101010101010101, 0x0101010101010101 # 32  Right 1
+	.quad 0x0001000100010001, 0x0001000100010001, 0x0001000100010001, 0x0001000100010001 # 64  Right 2
+	.quad 0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x0000000000000000 # 96
+scan_subtraction_minuends_left:
+	.quad 0x0000000100000001, 0x0000000100000001, 0x0000000100000001, 0x0000000100000001 # 128 Right 4
+	.quad 0x0101010101010101, 0x0101010101010101, 0x0101010101010101, 0x0101010101010101 # 32  Left 1
+	.quad 0x0100010001000100, 0x0100010001000100, 0x0100010001000100, 0x0100010001000100 # 64  Left 2
+	.quad 0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x0000000000000000 # 96
+	.quad 0x0100000001000000, 0x0100000001000000, 0x0100000001000000, 0x0100000001000000 # 160 Left 4
+scan_subtraction_minuends_threes:
+	.quad 0x0001000001000001, 0x0100000100000100, 0x0000010000010000, 0x0001000001000001
+	.word 0x0100
+
+.equ INSTRUCTION_SIZE_SCAN_RIGHT_3, 116
+.align 8
+byte_code_scan_right_3:
+	.byte 0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00			#0   movq $1, %rcx
+	.byte 0xFE, 0xC9										#7   1: decb %cl
+	.byte 0x79, 0x02										#9   jns 2f
+	.byte 0xB1, 0x02										#11  movb $2, %cl
+
+	.byte 0xC5, 0xFE, 0x6F, 0x81, 0x00, 0x00, 0x00, 0x00	#13  2: vmovdqu scan_subtraction_minuends_threes(%rcx), %ymm0
+	.byte 0xC4, 0xC1, 0x7E, 0x6F, 0x0C, 0x24				#21  vmovdqu (%r12), %ymm1
+	.byte 0xC5, 0xFD, 0xD8, 0xC9, 0x66						#27  vpsubusb %ymm1, %ymm0, %ymm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8							#32  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0									#36  testq %r8, %r8
+	.byte 0x75, 0x40										#39  jnz 1f
+
+	.byte 0x49, 0x83, 0xC4, 0x08							#41  addq $8, %r12
+	.byte 0xC5, 0xE9, 0x73, 0xD9, 0x08, 0x66				#45  vpsrldq $8, %xmm1, %xmm2
+	.byte 0x49, 0x0F, 0x7E, 0xD0							#51  movq %xmm2, %r8
+	.byte 0x4D, 0x85, 0xC0									#55  testq %r8, %r8
+	.byte 0x75, 0x2D										#58  jnz 1f
+
+	.byte 0x49, 0x83, 0xC4, 0x08							#60  addq $8, %r12
+	.byte 0xC4, 0xE3, 0x7D, 0x39, 0xC9, 0x01, 0x66			#64  vextracti128 $1, %ymm1, %xmm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8							#71  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0									#75  testq %r8, %r8
+	.byte 0x75, 0x19										#78  jnz 1f
+
+	.byte 0x49, 0x83, 0xC4, 0x08							#80  addq $8, %r12
+	.byte 0xC5, 0xF1, 0x73, 0xD9, 0x08, 0x66				#84  vpsrldq $8, %xmm1, %xmm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8							#90  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0									#94  testq %r8, %r8
+	.byte 0x75, 0x06										#97  jnz 1f
+	.byte 0x49, 0x83, 0xC4, 0x08							#99  addq $8, %r12
+	.byte 0xEB, 0x9E										#103 jmp 1b
+
+	.byte 0x4D, 0x0F, 0xBC, 0xC0							#105 1: bsrq %r8, %r8
+	.byte 0x49, 0xC1, 0xE8, 0x03							#109 shrq $3, %r8
+	.byte 0x4D, 0x01, 0xC4									#113 addq %r8, %r12
+	.byte 0x00, 0x00, 0x00, 0x00							# Padding
+.macro write_instruction_scan_right_3
+	movq $15, %rcx # Quad count
+	movq %r13, %rdi # Destination
+	movq $byte_code_scan_right_3, %rsi # Source
+	rep movsq
+	addq $scan_subtraction_minuends_threes, 17(%r13) # Insert minuend address
+	addq $INSTRUCTION_SIZE_SCAN_RIGHT_3, %r13
+.endm
+
+.equ INSTRUCTION_SIZE_SCAN_LEFT_3, 123
+.align 8
+byte_code_scan_left_3:
+	.byte 0x48, 0xC7, 0xC1, 0x04, 0x00, 0x00, 0x00			#0   movq $4, %rcx
+	.byte 0x80, 0xE9, 0x02									#7   1: subb $2, %cl
+	.byte 0x79, 0x03										#10  jns 2f
+	.byte 0x80, 0xC1, 0x03									#12  addb $3, %cl
+
+	.byte 0xC5, 0xFE, 0x6F, 0x81, 0x00, 0x00, 0x00, 0x00	#15  2: vmovdqu scan_subtraction_minuends_threes(%rcx), %ymm0
+	.byte 0xC4, 0xC1, 0x7E, 0x6F, 0x4C, 0x24, 0xE1			#23  vmovdqu -31(%r12), %ymm1
+	.byte 0xC5, 0xFD, 0xD8, 0xE1							#30  vpsubusb %ymm1, %ymm0, %ymm4
+	.byte 0xC4, 0xE3, 0x7D, 0x39, 0xE2, 0x01				#34  vextracti128 $1, %ymm4, %xmm2
+	.byte 0xC5, 0xF1, 0x73, 0xDA, 0x08, 0x66				#40  vpsrldq $8, %xmm2, %xmm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8							#46  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0									#50  testq %r8, %r8
+	.byte 0x75, 0x35										#53  jnz 1f
+
+	.byte 0x49, 0x83, 0xEC, 0x08, 0x66						#55  subq $8, %r12
+	.byte 0x49, 0x0F, 0x7E, 0xD0							#60  movq %xmm2, %r8
+	.byte 0x4D, 0x85, 0xC0									#64  testq %r8, %r8
+	.byte 0x75, 0x27										#67  jnz 1f
+
+	.byte 0x49, 0x83, 0xEC, 0x08							#69  subq $8, %r12
+	.byte 0xC5, 0xE1, 0x73, 0xDC, 0x08, 0x66				#73  vpsrldq $8, %xmm4, %xmm3
+	.byte 0x49, 0x0F, 0x7E, 0xD8							#79  movq %xmm3, %r8
+	.byte 0x4D, 0x85, 0xC0									#83  testq %r8, %r8
+	.byte 0x75, 0x14										#86  jnz 1f
+
+	.byte 0x49, 0x83, 0xEC, 0x08, 0x66						#88  subq $8, %r12
+	.byte 0x49, 0x0F, 0x7E, 0xE0							#93  movq %xmm4, %r8
+	.byte 0x4D, 0x85, 0xC0									#97  testq %r8, %r8
+	.byte 0x75, 0x06										#100 jnz 1f
+	.byte 0x49, 0x83, 0xEC, 0x08							#102 subq $8, %r12
+	.byte 0xEB, 0x9B										#106 jmp 1b
+
+	.byte 0x4D, 0x0F, 0xBD, 0xC0							#108 1: bsrq %r8, %r8
+	.byte 0x49, 0xC1, 0xE8, 0x03							#112 shrq $3, %r8
+	.byte 0x4D, 0x01, 0xC4									#116 addq %r8, %r12
+	.byte 0x49, 0x83, 0xEC, 0x07							#119 subq $7, %r12
+	.byte 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00			# Padding
+.macro write_instruction_scan_left_3
+	movq $16, %rcx # Quad count
+	movq %r13, %rdi # Destination
+	movq $byte_code_scan_left_3, %rsi # Source
+	rep movsq
+	addq $scan_subtraction_minuends_threes, 19(%r13) # Insert minuend address
+	addq $INSTRUCTION_SIZE_SCAN_LEFT_3, %r13
+.endm
+
+.equ INSTRUCTION_SIZE_SCAN_RIGHT_POW2, 107
+.align 8
+byte_code_scan_right_pow2:
+	.byte 0x49, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00			#0   movq $minuend_index, %r8
+	.byte 0xC4, 0xC1, 0x7D, 0x6F, 0x00						#7   vmovdqa (%r8), %ymm0
+
+	.byte 0xC4, 0xC1, 0x7E, 0x6F, 0x0C, 0x24				#12  1: vmovdqu (%r12), %ymm1
+	.byte 0xC5, 0xFD, 0xD8, 0xC9, 0x66						#18  vpsubusb %ymm1, %ymm0, %ymm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8							#23  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0									#27  testq %r8, %r8
+	.byte 0x75, 0x40										#30  jnz 1f
+
+	.byte 0x49, 0x83, 0xC4, 0x08							#32  addq $8, %r12
+	.byte 0xC5, 0xE9, 0x73, 0xD9, 0x08, 0x66				#36  vpsrldq $8, %xmm1, %xmm2
+	.byte 0x49, 0x0F, 0x7E, 0xD0							#42  movq %xmm2, %r8
+	.byte 0x4D, 0x85, 0xC0									#46  testq %r8, %r8
+	.byte 0x75, 0x2D										#49  jnz 1f
+
+	.byte 0x49, 0x83, 0xC4, 0x08							#51  addq $8, %r12
+	.byte 0xC4, 0xE3, 0x7D, 0x39, 0xC9, 0x01, 0x66			#55  vextracti128 $1, %ymm1, %xmm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8							#62  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0									#66  testq %r8, %r8
+	.byte 0x75, 0x19										#69  jnz 1f
+
+	.byte 0x49, 0x83, 0xC4, 0x08							#71  addq $8, %r12
+	.byte 0xC5, 0xF1, 0x73, 0xD9, 0x08, 0x66				#75  vpsrldq $8, %xmm1, %xmm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8							#81  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0									#85  testq %r8, %r8
+	.byte 0x75, 0x06										#88  jnz 1f
+	.byte 0x49, 0x83, 0xC4, 0x08							#90  addq $8, %r12
+	.byte 0xEB, 0xAC										#94  jmp 1b
+
+	.byte 0x4D, 0x0F, 0xBC, 0xC0							#96  1: bsrq %r8, %r8
+	.byte 0x49, 0xC1, 0xE8, 0x03							#100 shrq $3, %r8
+	.byte 0x4D, 0x01, 0xC4									#104 addq %r8, %r12
+	.byte 0x00, 0x00, 0x00, 0x00, 0x00						# Padding
+.macro write_instruction_scan_right_pow2 right_count
+	movl \right_count, %r8d # Get minuend index
+	shlq $5, %r8
+	addq $scan_subtraction_minuends_right, %r8
+	movq $14, %rcx # Quad count
+	movq %r13, %rdi # Destination
+	movq $byte_code_scan_right_pow2, %rsi # Source
+	rep movsq
+	movl %r8d, 3(%r13) # Insert minuend index
+	addq $INSTRUCTION_SIZE_SCAN_RIGHT_POW2, %r13
+.endm
+
+.equ INSTRUCTION_SIZE_SCAN_LEFT_POW2, 112
+.align 8
+byte_code_scan_left_pow2:
+	.byte 0x49, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00			#0   movq $minuend_index, %r8
+	.byte 0xC4, 0xC1, 0x7D, 0x6F, 0x00						#7   vmovdqa (%r8), %ymm0
+
+	.byte 0xC4, 0xC1, 0x7E, 0x6F, 0x4C, 0x24, 0xE1			#12  1: vmovdqu -31(%r12), %ymm1
+	.byte 0xC5, 0xFD, 0xD8, 0xE1							#19  vpsubusb %ymm1, %ymm0, %ymm4
+	.byte 0xC4, 0xE3, 0x7D, 0x39, 0xE2, 0x01				#23  vextracti128 $1, %ymm4, %xmm2
+	.byte 0xC5, 0xF1, 0x73, 0xDA, 0x08, 0x66				#29  vpsrldq $8, %xmm2, %xmm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8							#35  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0									#39  testq %r8, %r8
+	.byte 0x75, 0x35										#42  jnz 1f
+
+	.byte 0x49, 0x83, 0xEC, 0x08, 0x66						#44  subq $8, %r12
+	.byte 0x49, 0x0F, 0x7E, 0xD0							#49  movq %xmm2, %r8
+	.byte 0x4D, 0x85, 0xC0									#53  testq %r8, %r8
+	.byte 0x75, 0x27										#56  jnz 1f
+
+	.byte 0x49, 0x83, 0xEC, 0x08							#58  subq $8, %r12
+	.byte 0xC5, 0xE1, 0x73, 0xDC, 0x08, 0x66				#62  vpsrldq $8, %xmm4, %xmm3
+	.byte 0x49, 0x0F, 0x7E, 0xD8							#68  movq %xmm3, %r8
+	.byte 0x4D, 0x85, 0xC0									#72  testq %r8, %r8
+	.byte 0x75, 0x14										#75  jnz 1f
+
+	.byte 0x49, 0x83, 0xEC, 0x08, 0x66						#77  subq $8, %r12
+	.byte 0x49, 0x0F, 0x7E, 0xE0							#82  movq %xmm4, %r8
+	.byte 0x4D, 0x85, 0xC0									#86  testq %r8, %r8
+	.byte 0x75, 0x06										#89  jnz 1f
+	.byte 0x49, 0x83, 0xEC, 0x08							#91  subq $8, %r12
+	.byte 0xEB, 0xAB										#95  jmp 1b
+
+	.byte 0x4D, 0x0F, 0xBD, 0xC0							#97  1: bsrq %r8, %r8
+	.byte 0x49, 0xC1, 0xE8, 0x03							#101 shrq $3, %r8
+	.byte 0x4D, 0x01, 0xC4									#105 addq %r8, %r12
+	.byte 0x49, 0x83, 0xEC, 0x07							#108 subq $7, %r12
+.macro write_instruction_scan_left_pow2 left_count
+	movl \left_count, %r8d # Get minuend index
+	shlq $5, %r8
+	addq $scan_subtraction_minuends_left, %r8
+	movq $14, %rcx # Quad count
+	movq %r13, %rdi # Destination
+	movq $byte_code_scan_left_pow2, %rsi # Source
+	rep movsq
+	movl %r8d, 3(%r13) # Insert minuend index
+	addq $INSTRUCTION_SIZE_SCAN_LEFT_POW2, %r13
+.endm
+
+.macro write_scan right_count
+	# Get absolute value
+	movl \right_count, %r8d
+	cmpl $0, %r8d
+	jge 1f
+	negl %r8d
+1:
+
+	# Case greater than 4
+	cmpl $4, %r8d
+	jbe 1f
+	write_instruction_scan_loop \right_count
+	jmp 3f
+1:
+
+	# Case 3
+	cmpl $3, %r8d
+	jne 1f
+	cmpl $0, \right_count # Check if right count is negative
+	jge 2f
+	write_instruction_scan_left_3
+	jmp 3f
+2:
+	write_instruction_scan_right_3
+	jmp 3f
+1:
+
+	# Case power of 2
+	cmpl $0, \right_count # Check if right count is negative
+	jge 1f
+	write_instruction_scan_left_pow2 %r8d
+	jmp 3f
+1:
+	write_instruction_scan_right_pow2 %r8d
+	jmp 3f
 3:
 .endm
 
@@ -706,7 +964,7 @@ compile_out:
 ##############################################################################################################################################
 # Compile loops
 ##############################################################################################################################################
-.macro remove_right_instruction_via_r8 src_pointer
+.macro remove_right_instruction src_pointer
 	movl -INSTRUCTION_SIZE_RIGHT(\src_pointer), %r8d # Check if previous instruction was a move instruction
 	andl $0x00FFFFFF, %r8d # And out the first bit of the amount so that only the opcode bits are there
 	cmpl $0x00C48141, %r8d
@@ -715,6 +973,13 @@ compile_out:
 1:
 .endm
 
+.macro pop_bracket_frame
+	movl -16(%rbp), %r8d # Get flags
+	movq %rbp, %rsp # Pop bracket frame
+	popq %rbp
+	andl $(LOOP_CONTAINS_SCAN), %r8d # Propagate appropriate flags
+	orl %r8d, -16(%rbp) # Inset into parent bracket frame
+.endm
 
 ################################## None ##################################
 compile_for_no_optimizations:
@@ -727,8 +992,7 @@ compile_for_no_optimizations:
 	write_jump_offset %r13, -4, %rdx
 	write_jump_offset %rdx, -4, %r13
 
-	movq %rbp, %rsp # Pop bracket frame
-	popq %rbp
+	pop_bracket_frame
 	movl $0, -12(%rbp) # Reset memory pointer to match the movement before the if
 
 	orl $LOOP_CONTAINS_LOOP, -16(%rbp) # Loop contains a inner loop
@@ -745,47 +1009,45 @@ compile_loop_mult:
 	cmpl $INSTRUCTION_SIZE_PLUS, %edx
 	je compile_loop_set_zero
 
-	# Pop bracket frame
-	movq %rbp, %rsp
-	popq %rbp
+	pop_bracket_frame
 
 	/*
 		We first read out all the plus instruction onto the stack, unless the plus instruction is a source add instruction,
-		then we keep track of it in %rcx. After reading, we write back the instructions as a multiplications, with a
-		load loop count instruction beforehand and a set zero instruction after. %rdi will be used as index through the loop.
+		then we keep track of it in %r10. After reading, we write back the instructions as a multiplications, with a
+		load loop count instruction beforehand and a set zero instruction after. %r11 will be used as index through the loop.
 		And %rdx will be used to store the original the stack pointer. Meanwhile, %rax will just preserve the address of the
 		if instruction to be used later.
 	*/
 
 	# Loop through all the plus instructions
-	movq %rax, %rdi # Get address of first plus instruction's address
-	addq $INSTRUCTION_SIZE_IF + 4, %rdi
-	movb $0, %cl # Set source add count to 0
+	movq %rax, %r11 # Get address of first plus instruction's address
+	addq $INSTRUCTION_SIZE_IF + 4, %r11
+	movb $0, %r10b # Set source add count to 0
 	movq %rsp, %rdx # Preserve stack pointer in %rdx
 compile_mult_read_loop:
 	# End condition
-	cmpq %r13, %rdi
+	cmpq %r13, %r11
 	ja compile_mult_read_loop_end
 
 	# Load address and amount of the plus instruction
-	pushq (%rdi) # Push the address and amount of the plus instruction to the stack
-	addq $INSTRUCTION_SIZE_PLUS, %rdi # Increment %rdi by INSTRUCTION_SIZE_PLUS
+	pushq (%r11) # Push the address and amount of the plus instruction to the stack
+	addq $INSTRUCTION_SIZE_PLUS, %r11 # Increment %r11 by INSTRUCTION_SIZE_PLUS
 	cmpl $0, (%rsp) # Check if it is a source add instruction
 	jne compile_mult_read_loop
 
 	# Increment source add count
-	addb 4(%rsp), %cl # Increment source add count
+	addb 4(%rsp), %r10b # Increment source add count
 	addq $8, %rsp # Pop the address and amount of the plus instruction
 	jmp compile_mult_read_loop
 compile_mult_read_loop_end:
 
 	# Move write pointer back
 	movq %rax, %r13
-	remove_right_instruction_via_r8 %r13
+	remove_right_instruction %r13
 
 	# Write load loop count instruction
 	movl -12(%rbp), %eax # Get offset from memory pointer
-	write_load_loop_count %cl, %eax
+	write_load_loop_count %r10b, %eax
 
 	# Write mult add instructions
 compile_mult_write_loop:
@@ -793,11 +1055,11 @@ compile_mult_write_loop:
 	cmpq %rdx, %rsp
 	je compile_mult_write_loop_end
 
-	popq %rdi # Get address and amount of plus instruction
-	movq %rdi, %rcx # Copy over to %rcx
-	shrq $32, %rcx # Extract amount
-	addl %eax, %edi # Add memory pointer offset of previoues bracket frame
-	write_mult_add %cl, %edi
+	popq %r11 # Get address and amount of plus instruction
+	movq %r11, %r10 # Copy over to %rcx
+	shrq $32, %r10 # Extract amount
+	addl %eax, %r11d # Add memory pointer offset of previoues bracket frame
+	write_mult_add %r10b, %r11d
 	jmp compile_mult_write_loop
 compile_mult_write_loop_end:
 
@@ -810,9 +1072,7 @@ compile_mult_write_loop_end:
 
 ################################## Set zero ##################################
 compile_loop_set_zero:
-	# Pop bracket frame
-	movq %rbp, %rsp
-	popq %rbp
+	pop_bracket_frame
 
 	# Calculate offset
 	movl -INSTRUCTION_SIZE_PLUS + 4(%r13), %eax # Get address offset of plus instruction
@@ -820,7 +1080,7 @@ compile_loop_set_zero:
 
 	# Move back the write pointer
 	subq $INSTRUCTION_SIZE_IF + INSTRUCTION_SIZE_PLUS, %r13
-	remove_right_instruction_via_r8 %r13
+	remove_right_instruction %r13
 
 	# Write set zero
 	write_instruction_set 0 %eax
@@ -830,66 +1090,16 @@ compile_loop_set_zero:
 
 
 
-// check_loop_optimization_scan_memory:
-// 	movb %ah, %al # Copy flags to al
-// 	andb $LOOP_OPPTIMIZATION_SCAN_MEMORY, %al # Isolate scan memory flag
-// 	cmpb $0, %al # If scan memory flag is not set, skip optimize loop
-// 	je compile_for_no_optimizations
-	
-// 	movl 12(%rsp), %eax # Read memory pointer offset of left instruction
-// 	subl $INSTRUCTION_SIZE_IF, %r12d # Go back to the if instruction
-// 	addq $16, %rsp # Pop bracket frame
-// 	andb $0, (%rsp) # No loop optimizations possible
+################################## Scan ##################################
+compile_loop_scan:	
+	movl -12(%rbp), %eax # Read memory pointer offset of right instruction
+	subq $INSTRUCTION_SIZE_IF, %r13 # Go back to the if instruction
+	pop_bracket_frame
+	movl $0, -12(%rbp) # Reset memory pointer to match the movement before the if
 
-// 	# If we got here, that means the loop contains a singular memory movement instruction. If the memory offset is withing the 
-// 	# range of -4 to 4, inclusive, then we can use vector registers. If the values are 1, 2, 4, -1, -2 or -4, they divide 64 evenly,
-// 	# so we can use an optimized instruction to take advantage of that. Then the minduend indices should be 0, 32, 96, 64, 128, 160 
-// 	# consecutively. Otherwise we have to think about the remainders of the mod3 arithmatic. Finally, if it doesn't fit in the range,
-// 	# we'll have to do a more manual scan.
-
-// 	cmpl $0, %eax # If greater than zero, do checks for positive numbers, else for negative
-// 	jl check_loop_optimization_scan_negatives
-// 	cmpl $4, %eax # Check if it is a manual scan
-// 	jg optimize_loop_scan_manual
-// 	cmpl $3, %eax # Check if it is a three scan loop
-// 	je optimize_loop_scan_positive_three
-
-// 	# It is a simplified right scan instruction
-// 	shlb $5, %al # Multiply the memory pointer offset by 32 to get the minuend index (32, 64, 128)
-// 	movb %al, 1 + intermediate_src(%r12) # Insert minuend index into instruction
-// 	write_instruction SCAN_RIGHT_POW2
-// 	jmp read_loop
-
-// check_loop_optimization_scan_negatives:
-// 	cmpl $-4, %eax # Check if it is a manual scan
-// 	jl optimize_loop_scan_manual
-// 	cmpl $-3, %eax # Check if it is a three scan loop
-// 	je optimize_loop_scan_negative_three
-
-// 	# Write a pow 2 scan loop
-// 	negl %eax # Negate memory pointer offset to make it positive
-// 	incb %al # Increment it to make it 2, 3 or 5
-// 	cmpb $2, %al # Check if the movement amount is 2
-// 	jne 1f
-// 	movb $0, %al # If so, set it to 0
-// 1:
-// 	shlb $5, %al # Multiply by 32 to get the minuend index (0, 96, 160)
-// 	movb %al, 1 + intermediate_src(%r12) # Insert minuend index into instruction
-// 	write_instruction SCAN_LEFT_POW2
-// 	jmp read_loop
-
-// optimize_loop_scan_positive_three:
-// 	write_instruction SCAN_RIGHT_THREE
-// 	jmp read_loop
-
-// optimize_loop_scan_negative_three:
-// 	write_instruction SCAN_LEFT_THREE
-// 	jmp read_loop
-
-// optimize_loop_scan_manual:
-// 	movl %eax, 1 + intermediate_src(%r12) # Insert memory pointer offset into instruction
-// 	write_instruction SCAN_MANUAL
-// 	jmp read_loop
+	write_scan %eax
+	orl $LOOP_CONTAINS_SCAN, -16(%rbp)
+	jmp read_loop
 
 
 
@@ -934,7 +1144,7 @@ compile_loop_jmp_table:
 	.quad compile_for_no_optimizations # 0x1D
 	.quad compile_for_no_optimizations # 0x1E
 	.quad compile_for_no_optimizations # 0x1F
-	.quad compile_for_no_optimizations # 0x20
+	.quad compile_loop_scan			   # 0x20
 	.quad compile_for_no_optimizations # 0x21
 	.quad compile_for_no_optimizations # 0x22
 	.quad compile_for_no_optimizations # 0x23
@@ -1030,301 +1240,3 @@ compile_loop_jmp_table:
 	.quad compile_for_no_optimizations # 0x7D
 	.quad compile_for_no_optimizations # 0x7E
 	.quad compile_for_no_optimizations # 0x7F
-
-
-##############################################################################################################################################
-# Run
-##############################################################################################################################################
-// run:
-// 	PROLOGUE
-
-// 	# Free up %r12-15
-// 	push %r12 # -8  Becomes intermediate_src counter
-// 	push %r13 # -16 Becomes memory pointer
-// 	push %r14 # -24 Becomes output counter
-// 	push %r15 # -32 Becomes variable register for some instructions
-// 	# %rcx is used as instruction register
-
-// 	# Init intermediate_src counter, memory pointer and output counter to 0
-// 	movq $0, %r12
-// 	movq $0, %r13
-// 	movq $0, %r14
-// run_loop:
-// 	INCR_EXECUTED_OPERATIONS_STAT # Comment out above
-
-// 	# Jump into instruction table
-// 	movq intermediate_src(%r12), %rcx # Get instruction
-// 	movzb %cl, %rdx # Read op code
-// 	shlq $3, %rdx # Multiply by 8
-// 	jmp *run_instruction_jmp_table(%rdx) # Index into the table
-
-// run_return:
-// 	# Restore %r12-15
-// 	movq -8(%rbp), %r12	
-// 	movq -16(%rbp), %r13
-// 	movq -24(%rbp), %r14
-// 	movq -32(%rbp), %r15
-// 	EPILOGUE
-
-
-// .equ OP_CODE_EXIT, 0
-// .equ OP_CODE_IF, 1
-// .equ OP_CODE_FOR, 2
-// .equ OP_CODE_RIGHT, 3
-// .equ OP_CODE_SCAN_RIGHT_POW2, 4
-// .equ OP_CODE_SCAN_LEFT_POW2, 5
-// .equ OP_CODE_SCAN_RIGHT_THREE, 6
-// .equ OP_CODE_SCAN_LEFT_THREE, 7
-// .equ OP_CODE_SCAN_MANUAL, 8
-// .equ OP_CODE_LOAD_LOOP_COUNT, 26
-// .equ OP_CODE_PLUS, 27
-// .equ OP_CODE_SET_ZERO, 28
-// .equ OP_CODE_MULT_ADD, 29
-// .equ OP_CODE_IN, 30
-// .equ OP_CODE_OUT, 31
-// run_instruction_jmp_table:
-// 	.quad run_return				# 0 exit
-// 	.quad run_instruction_if		# 1 if
-// 	.quad run_instruction_for		# 2 for
-// 	.quad run_instruction_right		# 3 right
-// 	.quad run_instruction_scan_right_pow2	# 4
-// 	.quad run_instruction_scan_left_pow2	# 5
-// 	.quad run_instruction_scan_right_three	# 6
-// 	.quad run_instruction_scan_left_three	# 7
-// 	.quad run_instruction_scan_manual		# 8
-// 	.quad run_return				# 9
-// 	.quad run_return				# 10
-// 	.quad run_return				# 11
-// 	.quad run_return				# 12
-// 	.quad run_return				# 13
-// 	.quad run_return				# 14
-// 	.quad run_return				# 15
-// 	.quad run_return				# 16
-// 	.quad run_return				# 17
-// 	.quad run_return				# 18
-// 	.quad run_return				# 19
-// 	.quad run_return				# 20
-// 	.quad run_return				# 21
-// 	.quad run_return				# 22
-// 	.quad run_return				# 23
-// 	.quad run_return				# 24
-// 	.quad run_return				# 25
-// 	.quad run_instruction_load_loop_count # 26 load loop count
-// 	.quad run_instruction_plus		# 27 plus
-// 	.quad run_instruction_set_zero	# 28 set zero
-// 	.quad run_instruction_mult_add	# 29 mult add
-// 	.quad run_instruction_in		# 30 in
-// 	.quad run_instruction_out		# 31 out
-
-
-
-// /*
-// 	Scans the ymm1 register for the first byte whose value is not 0. The scan can go both ways by substituting either addq or subq into the
-// 	first parameter, and bsfq or bsrq into the second parameter, and changing the 4th, 5th, 6th and 7th parameters to the appropriate
-// 	instructions to extract the right 64 bits from the ymm1 register. The macro assumes that these results end up in xmm1, xmm2, xmm3 and xmm4
-// 	consecutively. Note though that in reverse the result in the memory pointer will be one to big. The third parameter is the label to jump 
-// 	to if no match is found, potentially so this macro can be used in a loop. Even if no match is found, the memory pointer will still 
-// 	be incremented/decremented by 32.
-// */
-// .macro scan_ymm1_for_0s add_or_sub_instruction bsr_or_f_instruction no_ones_label instr_extract_0 instr_extract_1 instr_extract_2 instr_extract_3
-// 	\instr_extract_0 # Extract first 8 byte
-// 	movq %xmm1, %rax # Get lower half
-// 	cmpq $0, %rax # Check if any byte is 1
-// 	jne 1f # Check the 64 msb
-
-// 	\add_or_sub_instruction $8, %r13d # Increment/decrement memory pointer by 8
-// 	\instr_extract_1 # Extract next 8 byte
-// 	movq %xmm2, %rax # Get lower half
-// 	cmpq $0, %rax # Check if any byte is 1
-// 	jne 1f # Check the 64 msb
-
-// 	\add_or_sub_instruction $8, %r13d # Increment/decrement memory pointer by 8
-// 	\instr_extract_2 # Extract next 8 byte
-// 	movq %xmm3, %rax # Get lower half
-// 	cmpq $0, %rax # Check if any byte is 1
-// 	jne 1f # Check the 64 msb
-
-// 	\add_or_sub_instruction $8, %r13d # Increment/decrement memory pointer by 8
-// 	\instr_extract_3 # Extract last 8 byte
-// 	movq %xmm4, %rax # Get lower half
-// 	cmpq $0, %rax # Check if any byte is 1
-// 	jne 1f # Check the 64 msb
-// 	\add_or_sub_instruction $8, %r13d # Increment/decrement memory pointer by 8
-// 	jmp \no_ones_label # No ones
-
-// 1:
-// 	\bsr_or_f_instruction %rax, %rax # Get index of the first non zero bit
-// 	shrq $3, %rax # Divide by 8
-// 	addl %eax, %r13d # Add to %r15
-// .endm
-
-// .align 32
-// scan_subtraction_minuends:
-// 	.quad 0x0101010101010101, 0x0101010101010101, 0x0101010101010101, 0x0101010101010101 # 0   Left 1
-// 	.quad 0x0101010101010101, 0x0101010101010101, 0x0101010101010101, 0x0101010101010101 # 32  Right 1
-// 	.quad 0x0001000100010001, 0x0001000100010001, 0x0001000100010001, 0x0001000100010001 # 64  Right 2
-// 	.quad 0x0100010001000100, 0x0100010001000100, 0x0100010001000100, 0x0100010001000100 # 96  Left 2
-// 	.quad 0x0000000100000001, 0x0000000100000001, 0x0000000100000001, 0x0000000100000001 # 128 Right 4
-// 	.quad 0x0100000001000000, 0x0100000001000000, 0x0100000001000000, 0x0100000001000000 # 160 Left 4
-// 	.quad 0x0001000001000001, 0x0100000100000100, 0x0000010000010000, 0x0001000001000001 # 192 Three's
-// 	.word 0x0100
-	
-// run_instruction_if:
-// 	addq $INSTRUCTION_SIZE_IF, %r12 # Increment intermediate src pointer regardless
-// 	cmpb $0, runtime_memory(%r13) # Check if it needs to jump
-// 	jne run_loop # No jump, just continue with next instruction
-
-// 	shrq $8, %rcx # Get jump address
-// 	movl %ecx, %r12d # Jump to instruction after if
-// 	jmp run_loop
-	
-// run_instruction_for:
-// 	addq $INSTRUCTION_SIZE_FOR, %r12 # Increment intermediate src pointer regardless
-// 	cmpb $0, runtime_memory(%r13) # Check if it needs to jump
-// 	je run_loop # No jump, just continue with next instruction
-
-// 	shrq $8, %rcx # Get jump address
-// 	movl %ecx, %r12d # Jump to instruction after for
-// 	jmp run_loop
-	
-// run_instruction_right:
-// 	shrq $8, %rcx # Get ammount to move
-// 	addl %ecx, %r13d # Get ammount to move and add to memory pointer
-// 	addl $INSTRUCTION_SIZE_RIGHT, %r12d # Increment intermediate src pointer
-// 	jmp run_loop
-
-// /*
-// 	For the scan instructions, load the next 32 bytes from memory. Then do a saturated subtraction of each 
-// 	byte from 1, so that the result may only be 1 if the byte was 0. Now, using the bsf/bsr instruction, we can 
-// 	get the index of the first non zero bit, giving us the index of the first byte in memory whose value was 0.
-// */
-// run_instruction_scan_right_pow2:
-// 	movl %r13d, %r15d # Load -memory pointer into %r15
-// 	negl %r15d
-// 	shrq $8, %rcx # Get memory pointer offset
-// 	andq $0xFF, %rcx # Mask out all but the last byte
-// 	vmovdqa scan_subtraction_minuends(%rcx), %ymm0 # Load subtraction minuends
-// run_instruction_scan_right_pow2_loop:
-// 	vmovdqu runtime_memory(%r13d), %ymm1 # Get next 32 bytes
-// 	vpsubusb %ymm1, %ymm0, %ymm1 # Subtract each byte from 1
- 
-// 	# Nothing for the first extraction step, then a vpsrldq to get segment 2, then a vextracti128 to get segment 3 and 4, then a vpsrldq to get segment 4
-// 	scan_ymm1_for_0s addl, bsfq, run_instruction_scan_right_pow2_loop, "", "vpsrldq $8, %xmm1, %xmm2", "vextracti128 $1, %ymm1, %xmm3", "vpsrldq $8, %xmm3, %xmm4"
-// 	addl $INSTRUCTION_SIZE_SCAN_RIGHT_POW2, %r12d # Increment intermediate src pointer
-// 	addl %r13d, %r15d # Add new memory pointer to %r15 to get the movement
-// 	jmp run_loop
-
-// run_instruction_scan_left_pow2:
-// 	movl %r13d, %r15d # Load -memory pointer into %r15
-// 	negl %r15d
-// 	shrq $8, %rcx # Get memory pointer offset
-// 	andq $0xFF, %rcx # Mask out all but the last byte
-// 	vmovdqa scan_subtraction_minuends(%rcx), %ymm0 # Load subtraction minuends
-// run_instruction_scan_left_pow2_loop:
-// 	vmovdqu runtime_memory - 31(%r13d), %ymm1 # Get next 32 bytes
-// 	vpsubusb %ymm1, %ymm0, %ymm4 # Subtract each byte from 1
-
-// 	# For the first extraction step do a vextracti128 and vpsrldq to get segment 3 and 4 of which we get segment 4, then nothing, then get segment 2, and then nothing
-// 	scan_ymm1_for_0s subl, bsrq, run_instruction_scan_left_pow2_loop, "vextracti128 $1, %ymm4, %xmm2 ; vpsrldq $8, %xmm2, %xmm1", "", "vpsrldq $8, %xmm4, %xmm3", ""
-// 	addl $INSTRUCTION_SIZE_SCAN_LEFT_POW2, %r12d # Increment intermediate src pointer
-// 	subl $7, %r13d # Decrement memory pointer by 1, since scan_ymm1_for_0s leaves it off by one in reverse
-// 	addl %r13d, %r15d # Add new memory pointer to %r15 to get the movement
-// 	jmp run_loop
-
-// run_instruction_scan_right_three:
-// 	movl %r13d, %r15d # Load -memory pointer into %r15
-// 	negl %r15d
-// 	movq $1, %rcx # Init %rcx to 1, represents the offset to get the right subtraction minuends
-// run_instruction_scan_right_three_loop:
-// 	# Do the mod3 arithmatic
-// 	decb %cl # Decrement %rcx by 1 to circle through to the next subtraction minuends
-// 	jns 1f # Jump if result was not -1
-// 	movb $2, %cl # Reset %rcx to 0
-// 1:
-// 	vmovdqu 192 + scan_subtraction_minuends(%rcx), %ymm0 # Load subtraction minuends with %rcx
-	
-// 	vmovdqu runtime_memory(%r13d), %ymm1 # Get next 32 bytes
-// 	vpsubusb %ymm1, %ymm0, %ymm1 # Subtract each byte from 1
- 
-// 	# Nothing for the first extraction step, then a vpsrldq to get segment 2, then a vextracti128 to get segment 3 and 4, then a vpsrldq to get segment 4
-// 	scan_ymm1_for_0s addl, bsfq, run_instruction_scan_right_three_loop, "", "vpsrldq $8, %xmm1, %xmm2", "vextracti128 $1, %ymm1, %xmm3", "vpsrldq $8, %xmm3, %xmm4"
-// 	addl $INSTRUCTION_SIZE_SCAN_RIGHT_THREE, %r12d # Increment intermediate src pointer
-// 	addl %r13d, %r15d # Add new memory pointer to %r15 to get the movement
-// 	jmp run_loop
-
-// run_instruction_scan_left_three:
-// 	movl %r13d, %r15d # Load -memory pointer into %r15
-// 	negl %r15d
-// 	movq $4, %rcx # Init %rcx to 1, represents the offset to get the right subtraction minuends
-// run_instruction_scan_left_three_loop:
-// 	# Do the mod3 arithmatic
-// 	subb $2, %cl # Subtract 2 from %rcx to circle through to the next subtraction minuends
-// 	jns 1f # Jump if result was not -1 or -2
-// 	addb $3, %cl # Add 3 back to make the result positive again
-// 1:
-// 	vmovdqu 192 + scan_subtraction_minuends(%rcx), %ymm0 # Load subtraction minuends with %rcx
-	
-// 	vmovdqu runtime_memory - 31(%r13d), %ymm1 # Get next 32 bytes
-// 	vpsubusb %ymm1, %ymm0, %ymm4 # Subtract each byte from 1
- 
-// 	# For the first extraction step do a vextracti128 and vpsrldq to get segment 3 and 4 of which we get segment 4, then nothing, then get segment 2, and then nothing
-// 	scan_ymm1_for_0s subl, bsrq, run_instruction_scan_left_three_loop, "vextracti128 $1, %ymm4, %xmm2 ; vpsrldq $8, %xmm2, %xmm1", "", "vpsrldq $8, %xmm4, %xmm3", ""
-// 	addl $INSTRUCTION_SIZE_SCAN_LEFT_THREE, %r12d # Increment intermediate src pointer
-// 	subl $7, %r13d # Decrement memory pointer by 1, since scan_ymm1_for_0s leaves it off by one in reverse
-// 	addl %r13d, %r15d # Add new memory pointer to %r15 to get the movement
-// 	jmp run_loop
-
-// run_instruction_scan_manual:
-// 	movl %r13d, %r15d # Load -memory pointer into %r15
-// 	negl %r15d
-// 	shrq $8, %rcx # Get memory pointer offset
-// 	subl %ecx, %r13d
-// run_instruction_scan_manual_loop:
-// 	addl %ecx, %r13d # Loop until a zeroed memory cell is found
-// 	cmpb $0, runtime_memory(%r13d)
-// 	jne run_instruction_scan_manual_loop
-
-// 	addl %r13d, %r15d # Add new memory pointer to %r15 to get the movement
-// 	addl $INSTRUCTION_SIZE_SCAN_MANUAL, %r12d
-// 	jmp run_loop
-
-// run_instruction_plus:
-// 	movb %ch, %al # Keep ammount to add
-// 	shrq $16, %rcx # Get memory pointer offset
-// 	addb %al, runtime_memory(%r13d, %ecx) # Add
-// 	addq $INSTRUCTION_SIZE_PLUS, %r12 # Increment intermediate src pointer
-// 	jmp run_loop
-	
-// run_instruction_set_zero:
-// 	shrq $8, %rcx # Get memory pointer offset
-// 	movb $0, runtime_memory(%r13d, %ecx) # Set to 0
-// 	addq $INSTRUCTION_SIZE_SET_ZERO, %r12 # Increment intermediate src pointer
-// 	jmp run_loop
-
-
-// run_instruction_mult_add:
-// 	movb %ch, %al # Move multiplier into mult register
-// 	mulb %r15b # Multiply by repetition count
-// 	shrq $16, %rcx # Get memory pointer offset
-// 	addb %al, runtime_memory(%r13d, %ecx) # Add
-// 	addq $INSTRUCTION_SIZE_MULT_ADD, %r12 # Increment intermediate src pointer
-// 	jmp run_loop
-
-// run_instruction_in:
-// 	movq %rcx, %r15 # Save input
-// 	call getchar
-// 	shrq $8, %r15 # Get memory pointer offset
-// 	movb %al, runtime_memory(%r13d, %r15d) # Store input into memory
-// 	addq $INSTRUCTION_SIZE_IN, %r12 # Increment intermediate src pointer
-// 	jmp run_loop
-
-// run_instruction_out:
-// 	shrq $8, %rcx # Get memory pointer offset
-// 	movb runtime_memory(%r13d, %ecx), %dil # Ouput from memory
-// 	call putchar
-// 	incq %r14 # Increment output pointer
-// 	addq $INSTRUCTION_SIZE_OUT, %r12 # Increment intermediate src pointer
-
-// 	LIMIT_PRINT_COUNT
-
-// 	jmp run_loop
