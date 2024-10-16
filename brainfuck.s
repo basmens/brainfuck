@@ -18,20 +18,20 @@
 
 # Comment out here to switch off statistics
 .macro SET_INTERMEDIATE_SRC_SIZE_STAT
-	subq -48(%rbp), %r13
-	movq %r13, intermediate_src_size
-	addq -48(%rbp), %r13
+	// subq -48(%rbp), %r13
+	// movq %r13, intermediate_src_size
+	// addq -48(%rbp), %r13
 .endm
 
 .macro INCR_EXECUTED_OPERATIONS_STAT
-	incq executed_operations
+	// incq executed_operations
 .endm
 
 .macro GET_TIME
-	movq $228, %rax # clock_gettime
-	movq $0, %rdi
-	movq $compile_time_out, %rsi
-	syscall
+	// movq $228, %rax # clock_gettime
+	// movq $0, %rdi
+	// movq $compile_time_out, %rsi
+	// syscall
 .endm
 
 # Comment out here to switch on/off decompiling
@@ -302,34 +302,34 @@ compile_char_jmp_table:
 # Compile
 ##############################################################################################################################################
 .macro write_intermediate_instruction op_code
-	movb \op_code, (%r12)
+	movq \op_code, (%r12) # Write op code and clear the rest
 	addq $8, %r12 # Increment intermediate write pointer
 .endm
 
 .macro write_intermediate_instruction_amount op_code, amount
-	movb \amount, 1(%r12)
 	write_intermediate_instruction \op_code
+	movb \amount, -7(%r12)
 .endm
 
 .macro write_intermediate_instruction_offset op_code, offset
-	movl \offset, 2(%r12)
 	write_intermediate_instruction \op_code
+	movl \offset, -6(%r12)
 .endm
 
 .macro write_intermediate_instruction_amount_offset op_code, amount, offset
-	movl \offset, 2(%r12)
 	write_intermediate_instruction_amount \op_code, \amount
+	movl \offset, -6(%r12)
 .endm
 
 .macro compile_pop_mem_movement
-	movl -12(%rbp), %eax # Get memory pointer offset from bracket frame
-	testl %eax, %eax # If memory pointer offset is 0, skip
+	movl -12(%rbp), %r8d # Get memory pointer offset from bracket frame
+	testl %r8d, %r8d # If memory pointer offset is 0, skip
 	jz 1f
 
 	# Memory pointer is not set to zero. That will be done by compile_for if it
 	# has been found that the loop cannot be optimized. Same goes for incrementing
 	# the maximum size of the executable memory.
-	write_intermediate_instruction_offset $OP_CODE_RIGHT, %eax # Write instruction
+	write_intermediate_instruction_offset $OP_CODE_RIGHT, %r8d # Write instruction
 1:
 .endm
 
@@ -337,9 +337,8 @@ compile_if:
 	compile_pop_mem_movement
 
 	# Write instruction
-	movw $0, 6(%r12) # Set flags to 0
 	write_intermediate_instruction $OP_CODE_IF
-	addq $INSTRUCTION_SIZE_IF, %r13 # Increment maximum executable memory size
+	addq $INSTRUCTION_SIZE_IF_ADDR, %r13 # Increment maximum executable memory size
 
 	# Write new bracket frame
 	pushq %rbp
@@ -350,6 +349,10 @@ compile_if:
 
 compile_for:
 	movq -16(%rbp), %rax # Get total memory movement and flags
+	testl $LOOP_NO_OPTIMIZATIONS, %eax # Check if no optimizations are possible
+	jnz compile_for_no_optimizations
+
+	# Optimizations are possible, jump to appropriate one
 	movq %rax, %rdx # Extract total memory movement
 	shrq $32, %rdx
 	cmpl $0, %edx # Check if it is zero
@@ -367,7 +370,7 @@ compile_right:
 compile_plus:
 	movl -12(%rbp), %eax # Get offset from memory pointer
 	write_intermediate_instruction_amount_offset $OP_CODE_PLUS, %dl, %eax
-	addq $INSTRUCTION_SIZE_PLUS, %r13 # Increment maximum executable memory size
+	addq $INSTRUCTION_SIZE_PLUS_ADDR, %r13 # Increment maximum executable memory size
 	orl $LOOP_CONTAINS_PLUS, -16(%rbp) # Loop contains a plus instruction
 	jmp read_loop
 
@@ -375,14 +378,14 @@ compile_in:
 	movl -12(%rbp), %eax # Get offset from memory pointer
 	write_intermediate_instruction_offset $OP_CODE_IN, %eax
 	addq $INSTRUCTION_SIZE_IN, %r13 # Increment maximum executable memory size
-	orl $LOOP_CONTAINS_IO, -16(%rbp) # Loop contains a in instruction
+	orl $LOOP_CONTAINS_IN, -16(%rbp) # Loop contains a in instruction
 	jmp read_loop
 
 compile_out:
 	movl -12(%rbp), %eax # Get offset from memory pointer
 	write_intermediate_instruction_offset $OP_CODE_OUT, %eax
-	addq $INSTRUCTION_SIZE_OUT, %r13 # Increment maximum executable memory size
-	orl $LOOP_CONTAINS_IO, -16(%rbp) # Loop contains a out instruction
+	addq $INSTRUCTION_SIZE_OUT_ADDR, %r13 # Increment maximum executable memory size
+	orl $LOOP_CONTAINS_OUT, -16(%rbp) # Loop contains a out instruction
 	jmp read_loop
 
 
@@ -401,7 +404,7 @@ compile_out:
 	movl -16(%rbp), %r8d # Get flags
 	movq %rbp, %rsp # Pop bracket frame
 	popq %rbp
-	andl $(LOOP_CONTAINS_SCAN), %r8d # Propagate appropriate flags
+	andl $(LOOP_NO_OPTIMIZATIONS), %r8d # Propagate appropriate flags
 	orl %r8d, -16(%rbp) # Inset into parent bracket frame
 .endm
 
@@ -412,7 +415,7 @@ compile_for_no_optimizations:
 	write_intermediate_instruction $OP_CODE_FOR
 	pop_bracket_frame
 	movl $0, -12(%rbp) # Reset memory pointer to match the movement before the if
-	addq $INSTRUCTION_SIZE_FOR + 2 * INSTRUCTION_SIZE_RIGHT, %r13 # Increment maximum executable memory size
+	addq $INSTRUCTION_SIZE_FOR_ADDR + 2 * INSTRUCTION_SIZE_RIGHT, %r13 # Increment maximum executable memory size
 
 	orl $LOOP_CONTAINS_LOOP, -16(%rbp) # Loop contains a inner loop
 	jmp read_loop
@@ -464,7 +467,7 @@ compile_mult_loop:
 	movb 1(%rax), %sil # Get amount of the plus instruction
 	addl %edx, %edi # Add the memory pointer offset of the parent bracket frame
 	write_intermediate_instruction_amount_offset $OP_CODE_MULT_ADD, %sil, %edi
-	addq $INSTRUCTION_SIZE_MULT_ADD_POW2, %r13 # Increment maximum executable memory size, pow2 is the biggest variant of the instruction
+	addq $INSTRUCTION_SIZE_MULT_ADD_POW2_ADDR, %r13 # Increment maximum executable memory size, pow2 is the biggest variant of the instruction
 	jmp compile_mult_loop
 
 compile_mult_loop_source_add:
@@ -476,13 +479,14 @@ compile_mult_loop_end:
 	write_intermediate_instruction_amount_offset $OP_CODE_SET, $0, %edx
 
 	# Write load loop count instruction
-	shlq $16, %rdx # Shift memory pointer offset 2 bytes left
+	shlq $32, %rdx # Shift memory pointer offset 4 bytes left to clear flags
+	shrq $16, %rdx # Shift memory pointer offset 2 bytes right
 	movb %cl, %dh # Insert source add count
 	movb $OP_CODE_LOAD_LOOP_COUNT, %dl # Insert opcode
 	movq %rdx, (%r11) # Insert instruction
 
  	# Increment maximum executable memory size, load loop count scan is the biggest variant of the instruction
-	addq $INSTRUCTION_SIZE_SET + INSTRUCTION_SIZE_LOAD_LOOP_COUNT_SCAN, %r13
+	addq $INSTRUCTION_SIZE_SET_ADDR + INSTRUCTION_SIZE_LOAD_LOOP_COUNT_SCAN, %r13
 	orl $LOOP_CONTAINS_SET | LOOP_CONTAINS_MULT, -16(%rbp) # Loop contains a set zero and a multiplication
 	jmp read_loop
 
@@ -492,14 +496,14 @@ compile_loop_set_zero:
 	# Write set zero
 	addl 2(%rax), %edx # Take parent bracket memory pointer offset and add to it the offset from this plus instruction to get the offset to write
 	write_intermediate_instruction_amount_offset $OP_CODE_SET, $0, %edx
-	addq $INSTRUCTION_SIZE_SET, %r13 # Increment maximum executable memory size
+	addq $INSTRUCTION_SIZE_SET_ADDR, %r13 # Increment maximum executable memory size
 	orl $LOOP_CONTAINS_SET, -16(%rbp) # Loop contains a set zero
 	jmp read_loop
 
 
 
 
-// ################################## Scan ##################################
+################################## Scan ##################################
 compile_loop_scan:	
 	movl -12(%rbp), %eax # Read memory pointer offset of right instruction
 	subq $8, %r12 # Go back to the if instruction
@@ -512,32 +516,53 @@ compile_loop_scan:
 	jmp read_loop
 
 
+################################## Registers ##################################
+compile_for_registers:
+	movq -8(%rbp), %rax # Get address after if
+	orw $FLAG_MAKE_REGISTER_LOOP, -2(%rax) # Set flag in if
+	
+	compile_pop_mem_movement
+	write_intermediate_instruction $OP_CODE_FOR
+	orw $FLAG_MAKE_REGISTER_LOOP, -2(%r12) # Set flag in for
+	pop_bracket_frame
+	movl $0, -12(%rbp) # Reset memory pointer to match the movement before the if
+	# Increment maximum executable memory size
+	addq $INSTRUCTION_SIZE_FOR_ADDR + INSTRUCTION_SIZE_RIGHT + MAX_REGISTER_COUNT * (INSTRUCTION_SIZE_LOAD + INSTRUCTION_SIZE_STORE), %r13
+
+	orl $LOOP_CONTAINS_LOOP, -16(%rbp) # Loop contains a inner loop
+	jmp read_loop
+	
 
 .equ LOOP_CONTAINS_PLUS, 0x1
-.equ LOOP_CONTAINS_IO, 0x2
+.equ LOOP_CONTAINS_OUT, 0x10
 .equ LOOP_CONTAINS_SET, 0x4
 .equ LOOP_CONTAINS_MULT, 0x8
-.equ LOOP_CONTAINS_LOOP, 0x10
-.equ LOOP_HAS_TOTAL_RIGHT, 0x20
-.equ LOOP_CONTAINS_SCAN, 0x40
+.equ LOOP_CONTAINS_LOOP, 0x20
+.equ LOOP_HAS_TOTAL_RIGHT, 0x40
+
+# No optimizations possible
+.equ LOOP_NO_OPTIMIZATIONS, 0x10000000
+.equ LOOP_CONTAINS_IN, 0x10000000
+.equ LOOP_CONTAINS_SCAN, 0x10000000
 
 compile_loop_jmp_table:
 	.quad compile_for_no_optimizations # 0x00
 	.quad compile_loop_mult			   # 0x01 Mult or set zero
-	.quad compile_for_no_optimizations # 0x02
-	.quad compile_for_no_optimizations # 0x03
-	.quad compile_for_no_optimizations # 0x04
-	.quad compile_for_no_optimizations # 0x05
-	.quad compile_for_no_optimizations # 0x06
-	.quad compile_for_no_optimizations # 0x07
-	.quad compile_for_no_optimizations # 0x08
-	.quad compile_for_no_optimizations # 0x09
-	.quad compile_for_no_optimizations # 0x0A
-	.quad compile_for_no_optimizations # 0x0B
-	.quad compile_for_no_optimizations # 0x0C
-	.quad compile_for_no_optimizations # 0x0D
-	.quad compile_for_no_optimizations # 0x0E
-	.quad compile_for_no_optimizations # 0x0F
+	// .quad compile_for_registers		   # 0x02 Normal loop, but can use registers
+	.quad compile_for_registers		   # 0x02 Normal loop, but can use registers
+	.quad compile_for_registers		   # 0x03
+	.quad compile_for_registers		   # 0x04
+	.quad compile_for_registers		   # 0x05
+	.quad compile_for_registers		   # 0x06
+	.quad compile_for_registers		   # 0x07
+	.quad compile_for_registers		   # 0x08
+	.quad compile_for_registers		   # 0x09
+	.quad compile_for_registers		   # 0x0A
+	.quad compile_for_registers		   # 0x0B
+	.quad compile_for_registers		   # 0x0C
+	.quad compile_for_registers		   # 0x0D
+	.quad compile_for_registers		   # 0x0E
+	.quad compile_for_registers		   # 0x0F
 	.quad compile_for_no_optimizations # 0x10
 	.quad compile_for_no_optimizations # 0x11
 	.quad compile_for_no_optimizations # 0x12
@@ -665,17 +690,6 @@ byte_code_right:
 	addq $INSTRUCTION_SIZE_RIGHT, %r13
 .endm
 
-.equ INSTRUCTION_SIZE_PLUS, 9
-.align 8
-byte_code_plus:
-	.byte 0x41, 0x80, 0x84, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00		#0 addq amount, address(%r12)
-.macro write_instruction_plus amount, address
-	movq $0x24848041, (%r13)
-	movl \address, 4(%r13)
-	movb \amount, 8(%r13)
-	addq $INSTRUCTION_SIZE_PLUS, %r13
-.endm
-
 .equ INSTRUCTION_SIZE_IN, 38
 .align 8
 byte_code_in:
@@ -705,83 +719,301 @@ byte_code_in:
 	addq $INSTRUCTION_SIZE_IN, %r13
 .endm
 
-.equ INSTRUCTION_SIZE_OUT, 18
-.align 8
-byte_code_out:
+.equ INSTRUCTION_SIZE_OUT_ADDR, 18
+byte_code_out_addr:
 	.byte 0x41, 0x8A, 0x84, 0x24, 0x00, 0x00, 0x00, 0x00		#0  movb address(%r12), %al
 	.byte 0x41, 0x88, 0x85; .long output_buffer					#8  movb %al, output_buffer(%r13)
 	.byte 0x49, 0xFF, 0xC5										#15 incq %r13
-.macro write_instruction_out address
+.macro write_instruction_out_addr address
 	movl $0x24848A41, (%r13)
 	movl \address, 4(%r13)
 	movl $0x00858841, 8(%r13)
 	movl $output_buffer, 11(%r13)
 	movl $0x00C5FF49, 15(%r13)
-	addq $INSTRUCTION_SIZE_OUT, %r13
+	addq $INSTRUCTION_SIZE_OUT_ADDR, %r13
 .endm
 
-.equ INSTRUCTION_SIZE_IF, 11
+.equ INSTRUCTION_SIZE_OUT_REG, 10
 .align 8
-byte_code_if:
+byte_code_out_reg_mov:
+	.long 0x008D8841 # movb %reg, output_buffer(%r13)
+	.long 0x00958841
+	.long 0x00BD8841
+	.long 0x00B58841
+	.long 0x00858845
+	.long 0x008D8845
+	.long 0x00958845
+	.long 0x00B58845 # r14b
+byte_code_out_reg:
+	.byte 0x49, 0xFF, 0xC5										#7 incq %r13
+.macro write_instruction_out_reg reg
+	movl \reg, %r8d
+	shll $2, %r8d
+	movl byte_code_out_reg_mov(%r8d), %r8d
+	movl %r8d, (%r13)
+	movl $output_buffer, 3(%r13)
+	movl $0x00C5FF49, 7(%r13)
+	addq $INSTRUCTION_SIZE_OUT_ADDR, %r13
+.endm
+
+.equ INSTRUCTION_SIZE_IF_ADDR, 11
+.align 8
+byte_code_if_addr:
 	.byte 0x41, 0x80, 0x3C, 0x24, 0x00					#0 cmpb $0, (%r12)
 	.byte 0x0F, 0x84, 0x00, 0x00, 0x00, 0x00			#5 je(long jump) address
-.macro write_instruction_if
+.macro write_instruction_if_addr
 	movl $0x243C8041, (%r13)
 	movl $0x00840F00, 4(%r13)
-	addq $INSTRUCTION_SIZE_IF, %r13
+	addq $INSTRUCTION_SIZE_IF_ADDR, %r13
 .endm
 
-.equ INSTRUCTION_SIZE_FOR, 11
+.equ INSTRUCTION_SIZE_IF_REG, 6 + SIZE_TEST_ZERO
 .align 8
-byte_code_for:
+byte_code_if_reg:
+	.byte 0x0F,0x85, 0x00, 0x00, 0x00, 0x00				#5 jnz(long jump) address
+.macro write_instruction_if_reg reg
+	write_test_zero \reg
+	movw $0x840F, SIZE_TEST_ZERO(%r13)
+	addq $INSTRUCTION_SIZE_IF_REG, %r13
+.endm
+
+.equ INSTRUCTION_SIZE_FOR_ADDR, 11
+.align 8
+byte_code_for_addr:
 	.byte 0x41,0x80, 0x3C, 0x24, 0x00					#0 cmpb $0, (%r12)
 	.byte 0x0F,0x85, 0x00, 0x00, 0x00, 0x00				#5 jne(long jump) address
-.macro write_instruction_for
+.macro write_instruction_for_addr
 	movl $0x243C8041, (%r13)
 	movl $0x00850F00, 4(%r13)
-	addq $INSTRUCTION_SIZE_FOR, %r13
+	addq $INSTRUCTION_SIZE_FOR_ADDR, %r13
 .endm
 
-.equ INSTRUCTION_SIZE_SET, 9
+.equ INSTRUCTION_SIZE_FOR_REG, 6 + SIZE_TEST_ZERO
 .align 8
-byte_code_set:
-	.byte 0x41, 0xC6, 0x84, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00			#0 movb $amount, address(%r12)
-.macro write_instruction_set amount address
-	movl $0x2484C641, (%r13)
-	movl \address, 4(%r13)
-	movb \amount, 8(%r13)
-	addq $INSTRUCTION_SIZE_SET, %r13
+byte_code_for_reg:
+	.byte 0x0F,0x85, 0x00, 0x00, 0x00, 0x00				#5 jnz(long jump) address
+.macro write_instruction_for_reg reg
+	write_test_zero \reg
+	movw $0x850F, SIZE_TEST_ZERO(%r13)
+	addq $INSTRUCTION_SIZE_FOR_REG, %r13
 .endm
-
 
 # Writes the jump offset at source to be the offset to dest
 .macro write_jump_offset from, static_offset_write, dest
 	# Calculate address offset
-	movq \dest, %rax # Get target
-	subq \from, %rax # Subtract source
-	movl %eax, \static_offset_write(\from)
+	movq \dest, %r8 # Get target
+	subq \from, %r8 # Subtract source
+	movl %r8d, \static_offset_write(\from)
 .endm
 
-################################## Load loop count ##################################
+################################## Arithmetic ##################################
+.equ INSTRUCTION_SIZE_NEG_REG, 3
+.align 8
+byte_code_load_neg_reg:
+	.long 0x00D9F640 # negb %reg
+	.long 0x00DAF640
+	.long 0x00DFF640
+	.long 0x00DEF640
+	.long 0x00D8F641
+	.long 0x00D9F641
+	.long 0x00DAF641
+	.long 0x00DBF641
+	.long 0x00DEF641 # r14b
+.macro write_instruction_neg_reg reg
+	movl \reg, %r8d
+	shll $2, %r8d
+	movl byte_code_load_neg_reg(%r8d), %r8d
+	movl %r8d, (%r13)
+	addq $INSTRUCTION_SIZE_NEG_REG, %r13
+.endm
+
+.equ INSTRUCTION_SIZE_PLUS_ADDR, 9
+.align 8
+byte_code_plus_addr:
+	.byte 0x41, 0x80, 0x84, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00		#0 addb amount, address(%r12)
+.macro write_instruction_plus_addr amount, address
+	movq $0x24848041, (%r13)
+	movl \address, 4(%r13)
+	movb \amount, 8(%r13)
+	addq $INSTRUCTION_SIZE_PLUS_ADDR, %r13
+.endm
+
+.equ INSTRUCTION_SIZE_PLUS_REG, 4
+.align 8
+byte_code_plus_reg:
+	.long 0x00C18040 # addb $amount, %reg
+	.long 0x00C28040
+	.long 0x00C78040
+	.long 0x00C68040
+	.long 0x00C08041
+	.long 0x00C18041
+	.long 0x00C28041
+	.long 0x00C38041
+	.long 0x00C68041 # r14b
+.macro write_instruction_plus_reg amount, reg
+	movl \reg, %r8d
+	shll $2, %r8d
+	movl byte_code_plus_reg(%r8d), %r8d
+	movl %r8d, (%r13)
+	movb \amount, 3(%r13)
+	addq $INSTRUCTION_SIZE_PLUS_REG, %r13
+.endm
+
+.equ INSTRUCTION_SIZE_SET_ADDR, 9
+.align 8
+byte_code_set_addr:
+	.byte 0x41, 0xC6, 0x84, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00			#0 movb $amount, address(%r12)
+.macro write_instruction_set_addr amount address
+	movl $0x2484C641, (%r13)
+	movl \address, 4(%r13)
+	movb \amount, 8(%r13)
+	addq $INSTRUCTION_SIZE_SET_ADDR, %r13
+.endm
+
+.equ INSTRUCTION_SIZE_SET_REG, 3
+.align 8
+byte_code_set_reg:
+	.word 0xB140 # movb $amount, %reg
+	.word 0xB240
+	.word 0xB740
+	.word 0xB640
+	.word 0xB041
+	.word 0xB141
+	.word 0xB241
+	.word 0xB341
+	.word 0xB641 # r14b
+.macro write_instruction_set_reg amount reg
+	movl \reg, %r8d
+	shll $1, %r8d
+	movw byte_code_set_reg(%r8d), %r8w
+	movw %r8w, (%r13)
+	movb \amount, 3(%r13)
+	addq $INSTRUCTION_SIZE_SET_REG, %r13
+.endm
+
+.equ INSTRUCTION_SIZE_ADD_ADDR, 8
+.align 8
+byte_code_add_addr:
+	.byte 0x45, 0x00, 0xB4, 0x24, 0x00, 0x00, 0x00, 0x00	#0 addb %r14b, address(%r12)
+.macro write_instruction_add_addr address
+	movl $0x24B40045, (%r13)
+	movl \address, 4(%r13)
+	addq $INSTRUCTION_SIZE_ADD_ADDR, %r13
+.endm
+
+.equ INSTRUCTION_SIZE_ADD_REG, 3
+.align 8
+byte_code_add_reg:
+	.long 0x00F10044 # addb %r14b, %reg
+	.long 0x00F20044
+	.long 0x00F70044
+	.long 0x00F60044
+	.long 0x00F00045
+	.long 0x00F10045
+	.long 0x00F20045
+	.long 0x00F30045
+.macro write_instruction_add_reg reg
+	movl \reg, %r8d
+	shll $2, %r8d
+	movl byte_code_add_reg(%r8d), %r8d
+	movl %r8d, (%r13)
+	addq $INSTRUCTION_SIZE_ADD_REG, %r13
+.endm
+
+
+
+.equ SIZE_ADD_AL_TO_ADDR, 8
+.align 8
+byte_code_add_al_to_addr:
+	.byte 0x41, 0x00, 0x84, 0x24, 0x00, 0x00, 0x00, 0x00	#0 addb %al, address(%r12)
+.macro write_add_al_to_addr address, write_offset
+	movl $0x24840041, \write_offset(%r13)
+	movl \address, \write_offset + 4(%r13)
+	# Incrementing the write pointer is left to the user of this macro
+.endm
+
+.equ SIZE_ADD_AL_TO_REG, 3
+.align 8
+byte_code_add_al_to_reg:
+	.long 0x00C10040 # addb %al, %reg
+	.long 0x00C20040
+	.long 0x00C70040
+	.long 0x00C60040
+	.long 0x00C00041
+	.long 0x00C10041
+	.long 0x00C20041
+	.long 0x00C30041
+.macro write_add_al_to_reg reg, write_offset
+	movl \reg, %r8d
+	shll $2, %r8d
+	movl byte_code_add_al_to_reg(%r8d), %r8d
+	movl %r8d, \write_offset(%r13)
+	# Incrementing the write pointer is left to the user of this macro
+.endm
+
+.equ SIZE_TEST_ZERO, 3
+.align 8
+byte_code_test_zero:
+	.long 0x00C98440 # testb %reg, %reg
+	.long 0x00D28440
+	.long 0x00FF8440
+	.long 0x00F68440
+	.long 0x00C08445
+	.long 0x00C98445
+	.long 0x00D28445
+	.long 0x00DB8445
+.macro write_test_zero reg
+	movl \reg, %r8d
+	shll $2, %r8d
+	movl byte_code_test_zero(%r8d), %r8d
+	movl %r8d, (%r13)
+	# Incrementing the write pointer is left to the user of this macro
+.endm
+
+################################## Load and store ##################################
 .equ INSTRUCTION_SIZE_LOAD, 8
 .align 8
 byte_code_load:
-	.byte 0x45, 0x8A, 0xB4, 0x24, 0x00, 0x00, 0x00, 0x00				#0 movb address(%r12), %r14b
-.macro write_instruction_load address
-	movl $0x24B48A45, (%r13)
+	.long 0x248C8A41 # movb address(%r12), %reg
+	.long 0x24948A41
+	.long 0x24BC8A41
+	.long 0x24B48A41
+	.long 0x24848A45
+	.long 0x248C8A45
+	.long 0x24948A45
+	.long 0x249C8A45
+	.long 0x24B48A45 # r14b			
+.macro write_instruction_load address, reg
+	movl \reg, %r8d
+	shll $2, %r8d
+	movl byte_code_load(%r8d), %r8d
+	movl %r8d, (%r13)
 	movl \address, 4(%r13)
 	addq $INSTRUCTION_SIZE_LOAD, %r13
 .endm
 
-.equ INSTRUCTION_SIZE_NEG_LOADED, 3
+.equ INSTRUCTION_SIZE_STORE, 8
 .align 8
-byte_code_load_neg_loaded:
-	.byte 0x41, 0xF6, 0xDE								#0 negb %r14b
-.macro write_instruction_neg_loaded address
-	movl $0x00DEF641, 8(%r13)
-	addq $INSTRUCTION_SIZE_NEG_LOADED, %r13
+byte_code_store:
+	.long 0x248C8841 # movb %reg, address(%r12)
+	.long 0x24948841
+	.long 0x24BC8841
+	.long 0x24B48841
+	.long 0x24848845
+	.long 0x248C8845
+	.long 0x24948845
+	.long 0x249C8845
+	.long 0x24B48845 # r14b
+.macro write_instruction_store address, reg
+	movl \reg, %r8d
+	shll $2, %r8d
+	movl byte_code_store(%r8d), %r8d
+	movl %r8d, (%r13)
+	movl \address, 4(%r13)
+	addq $INSTRUCTION_SIZE_STORE, %r13
 .endm
 
+################################## Load loop count ##################################
 .equ INSTRUCTION_SIZE_LOAD_POW2, 26
 .align 8
 byte_code_load_pow2:
@@ -834,18 +1066,40 @@ byte_code_load_loop_count_scan:
 
 # For load loop count we count down. If the add count is negative, we just negate it and do the
 # counting down. If it is positive, we negate the input so that we can count down on that.
-.macro write_load_loop_count add_count, address
-	# Load input
-	write_instruction_load \address
+.macro write_load_loop_count_addr add_count, address
+	movl $0x24B48A45, (%r13) # movb address(%r12), %r14b
+	movl \address, 4(%r13)
+	addq $8, %r13
+	write_load_loop_count \add_count
+.endm
 
+byte_code_load_loop_count_reg:
+	.long 0x00CE8841 # movb %reg, %r14b
+	.long 0x00D68841
+	.long 0x00FE8841
+	.long 0x00F68841
+	.long 0x00C68845
+	.long 0x00CE8845
+	.long 0x00D68845
+	.long 0x00DE8845
+.macro write_load_loop_count_reg add_count, reg
+	movl \reg, %r8d
+	shll $2, %r8d
+	movl byte_code_load_loop_count_reg(%r8d), %r8d
+	movl %r8d, (%r13)
+	addq $3, %r13
+	write_load_loop_count \add_count
+.endm
+
+.macro write_load_loop_count add_count
 	# Normalize everything to positive cases
 	cmpb $0, \add_count # Check if add count is negative
 	jg 1f
 	negb \add_count # Negate add count
 	jmp 2f
 1:
-	write_instruction_neg_loaded \address # Negate input
-	addq $INSTRUCTION_SIZE_NEG_LOADED, %r13
+	movl $0x00DEF641, (%r13) # negb %r14b
+	addq $3, %r13
 2:
 
 	# Check case 1
@@ -868,49 +1122,69 @@ byte_code_load_loop_count_scan:
 
 
 ################################## Mult add ##################################
-.equ INSTRUCTION_SIZE_ADD, 8
-.align 8
-byte_code_add:
-	.byte 0x45, 0x00, 0xB4, 0x24, 0x00, 0x00, 0x00, 0x00	#0 addb %r14b, address(%r12)
-.macro write_instruction_add address
-	movl $0x24B40045, (%r13)
-	movl \address, 4(%r13)
-	addq $INSTRUCTION_SIZE_ADD, %r13
+.equ INSTRUCTION_SIZE_MULT_ADD_POW2_ADDR, SIZE_MULT_ADD_POW2 + SIZE_ADD_AL_TO_ADDR
+.macro write_instruction_mult_add_pow2_addr amount, address
+	write_mult_add_pow2 \amount
+	write_add_al_to_addr \address, SIZE_MULT_ADD_POW2
+	addq $INSTRUCTION_SIZE_MULT_ADD_POW2_ADDR, %r13
 .endm
 
-.equ INSTRUCTION_SIZE_MULT_ADD_POW2, 14
+.equ INSTRUCTION_SIZE_MULT_ADD_POW2_REG, SIZE_MULT_ADD_POW2 + SIZE_ADD_AL_TO_REG
+.macro write_instruction_mult_add_pow2_reg amount, reg
+	write_mult_add_pow2 \amount
+	write_add_al_to_reg \reg, SIZE_MULT_ADD_POW2
+	addq $INSTRUCTION_SIZE_MULT_ADD_POW2_REG, %r13
+.endm
+
+.equ SIZE_MULT_ADD_POW2, 6
 .align 8
 byte_code_mult_add_pow2:
 	.byte 0x44, 0x88, 0xF0									#0 movb %r14b, %al
 	.byte 0xC0, 0xE0, 0x00									#3 shlb $shift_count, %al
-	.byte 0x41, 0x00, 0x84, 0x24, 0x00, 0x00, 0x00, 0x00	#6 addb %al, address(%r12)
-.macro write_instruction_mult_add_pow2 amount, address
+.macro write_mult_add_pow2 amount
 	movzb \amount, %r8w
 	bsfw %r8w, %r8w # Get shift count
 	movl $0xC0F08844, (%r13)
 	movb $0xE0, 4(%r13)
 	movb %r8b, 5(%r13)
-	movl $0x24840041, 6(%r13)
-	movl \address, 10(%r13)
-	addq $INSTRUCTION_SIZE_MULT_ADD_POW2, %r13
+	# Incrementing the write pointer is left to the user of this macro
 .endm
 
-.equ INSTRUCTION_SIZE_MULT_ADD, 13
+.equ INSTRUCTION_SIZE_MULT_ADD_ADDR, SIZE_MULT_ADD + SIZE_ADD_AL_TO_ADDR
+.macro write_instruction_mult_add_addr amount, address
+	write_mult_add \amount
+	write_add_al_to_addr \address, SIZE_MULT_ADD
+	addq $INSTRUCTION_SIZE_MULT_ADD_ADDR, %r13
+.endm
+
+.equ INSTRUCTION_SIZE_MULT_ADD_REG, SIZE_MULT_ADD + SIZE_ADD_AL_TO_REG
+.macro write_instruction_mult_add_reg amount, reg
+	write_mult_add \amount
+	write_add_al_to_reg \reg, SIZE_MULT_ADD
+	addq $INSTRUCTION_SIZE_MULT_ADD_REG, %r13
+.endm
+
+.equ SIZE_MULT_ADD, 5
 .align 8
 byte_code_mult_add:
 	.byte 0xB0, 0x00										#0 movb $amount, %al
 	.byte 0x41, 0xF6, 0xE6									#2 mulb %r14b
-	.byte 0x41, 0x00, 0x84, 0x24, 0x00, 0x00, 0x00, 0x00	#5 addb %al, address(%r12)
-.macro write_instruction_mult_add amount, address
+.macro write_mult_add amount
 	movl $0xF64100B0, (%r13)
 	movb \amount, 1(%r13)
 	movb $0xE6, 4(%r13)
-	movl $0x24840041, 5(%r13)
-	movl \address, 9(%r13)
-	addq $INSTRUCTION_SIZE_MULT_ADD, %r13
+	# Incrementing the write pointer is left to the user of this macro
 .endm
 
-.macro write_mult_add amount, address
+.macro write_mult_add_addr amount, address
+	write_mult_add_addr_or_reg \amount, addr, \address, -7
+.endm
+
+.macro write_mult_add_reg amount, reg
+	write_mult_add_addr_or_reg \amount, reg, \reg, -2
+.endm
+
+.macro write_mult_add_addr_or_reg amount, addr_or_reg, value, add_to_sub_offset
 	# Get absolute value of amount in %r8
 	movb \amount, %r8b
 	cmpb $0, %r8b
@@ -921,7 +1195,7 @@ byte_code_mult_add:
 	# Check if amount is 1
 	cmpb $1, %r8b
 	jne 1f
-	write_instruction_add \address
+	write_instruction_add_\addr_or_reg \value
 	jmp 2f
 1:
 
@@ -930,19 +1204,19 @@ byte_code_mult_add:
 	popcnt %r8, %r9
 	cmpb $1, %r9b
 	jne 1f
-	write_instruction_mult_add_pow2 %r8b \address
+	write_instruction_mult_add_pow2_\addr_or_reg %r8b \value
 	jmp 2f
 1:
 
 	# Not a simplified multiplication, so use a mult insruction
-	write_instruction_mult_add \amount \address
+	write_instruction_mult_add_\addr_or_reg \amount \value
 	jmp 3f
 
 2:
 	# Invert additions to subtractions if amount is negative
 	cmpb $0, \amount
 	jge 3f
-	movb $0x28, -7(%r13) # Make addition into a subtraction
+	movb $0x28, \add_to_sub_offset(%r13)
 3:
 .endm
 
@@ -1251,10 +1525,20 @@ compile_second_pass_loop:
 	addq $8, %r12 # Increment index in intermediate source
 	movq (%r12), %rdx
 
-	# Jump into jump table
+	# Jump into jump tablemake
 	movzb %dl, %rax
 	shlq $3, %rax
 	jmp *sp_compile_jmp_table(%rax)
+	// movq $-1, %rax
+	// write_instruction_set_reg $0, $0
+	// write_instruction_set_reg $0, $1
+	// write_instruction_set_reg $0, $2
+	// write_instruction_set_reg $0, $3
+	// write_instruction_set_reg $0, $4
+	// write_instruction_set_reg $0, $5
+	// write_instruction_set_reg $0, $6
+	// write_instruction_set_reg $0, $7
+	// jmp execute
 
 
 /*
@@ -1263,30 +1547,34 @@ compile_second_pass_loop:
 	some flags the instruction might use.
 */
 .equ OP_CODE_EXIT, 0
-.equ OP_CODE_PLUS, 1
-.equ OP_CODE_RIGHT, 2
+.equ OP_CODE_RIGHT, 1
+.equ OP_CODE_SCAN, 2
 .equ OP_CODE_IN, 3
-.equ OP_CODE_OUT, 4
+.equ OP_CODE_OUT, 4 # Everything from if onward supports registers
 .equ OP_CODE_IF, 5
 .equ OP_CODE_FOR, 6
-.equ OP_CODE_SET, 7
-.equ OP_CODE_LOAD_LOOP_COUNT, 8
-.equ OP_CODE_MULT_ADD, 9
-.equ OP_CODE_SCAN, 10
+.equ OP_CODE_PLUS, 7
+.equ OP_CODE_SET, 8
+.equ OP_CODE_LOAD_LOOP_COUNT, 9
+.equ OP_CODE_MULT_ADD, 10
 
+.equ FLAG_MAKE_REGISTER_LOOP, 0x1 # Only for if and for instructions
+.equ FLAG_USE_REGISTER, 0x2
+
+.equ MAX_REGISTER_COUNT, 8 # We got cl, dl, dil, sil, r8b, r9b, r10b and r11b, so thats 8 registers
 
 sp_compile_jmp_table:
 	.quad sp_compile_exit
-	.quad sp_compile_plus
 	.quad sp_compile_right
+	.quad sp_compile_scan
 	.quad sp_compile_in
 	.quad sp_compile_out
 	.quad sp_compile_if
 	.quad sp_compile_for
+	.quad sp_compile_plus
 	.quad sp_compile_set
 	.quad sp_compile_load_loop_count
 	.quad sp_compile_mult_add
-	.quad sp_compile_scan
 
 
 sp_compile_exit:
@@ -1299,15 +1587,14 @@ sp_compile_exit:
 
 	jmp execute
 
-sp_compile_plus:
-	movb %dh, %al # Get amount
-	shrq $16, %rdx # Get memory pointer offset
-	write_instruction_plus %al, %edx
-	jmp compile_second_pass_loop
-
 sp_compile_right:
 	shrq $16, %rdx # Get amount
 	write_instruction_right %edx
+	jmp compile_second_pass_loop
+
+sp_compile_scan:
+	shrq $16, %rdx # Get memory pointer offset
+	write_scan %edx
 	jmp compile_second_pass_loop
 
 sp_compile_in:
@@ -1317,43 +1604,199 @@ sp_compile_in:
 
 sp_compile_out:
 	shrq $16, %rdx # Get memory pointer offset
-	write_instruction_out %edx
+	movq %rdx, %rcx # Get flags
+	shrq $32, %rcx
+	testw $FLAG_USE_REGISTER, %cx # Test if we need to use a register
+	jz 100f
+	write_instruction_out_reg %edx
+	jmp compile_second_pass_loop
+	100:
+	write_instruction_out_addr %edx
 	jmp compile_second_pass_loop
 
 sp_compile_if:
-	write_instruction_if
-	pushq %r13 # Push address of first instruction after if instruction
+	# Start with the if, then do the loading if necessary
+	movq %rdx, %rcx # Get flags
+	shrq $48, %rcx
+	testw $FLAG_USE_REGISTER, %cx
+	jz 100f
+	shrq $16, %rdx # Get register
+	write_instruction_if_reg %edx
+	jmp 200f
+	100:
+	write_instruction_if_addr
+	200:
+
+	testw $FLAG_MAKE_REGISTER_LOOP, %cx
+	jz sp_compile_if_write
+
+	/*
+		We scan through the instructions untill either we reach the for statement or we have exhausted all registers. For each instruction 
+		we check if the register flag is not set. If it isn't, then we assign that instruction the next register and scan forward to assign 
+		every instruction with the same address that register too. %rax will be the outer loop index. %rcx will count the amount of registers used. 
+		%r8 will be used as the index for the inner loop. When a register has been assigned, we also write the load instruction to load that register
+		and we write the address to the stack so that the for instruction can write the store instructions.
+	*/
+
+	# Loop
+	movq %r12, %rax # Get read pointer
+	xorq %rcx, %rcx # Clear %rcx
+	sp_compile_registers_loop:
+		# Increment and end condition
+		addq $8, %rax
+
+		# Check if the register flag is not set
+		testw $FLAG_USE_REGISTER, 6(%rax)
+		jnz sp_compile_registers_loop_end_condition
+
+		# Set flag and scan forwards
+		movl 2(%rax), %edi # Get address
+		movq %rax, %r8 # Use %r8 as the inner loop index
+		subq $8, %r8 # Decrement %r8 to be incremented on entry in the loop
+		sp_compile_registers_loop_inner:
+			# Increment and get instruction
+			addq $8, %r8
+			movq (%r8), %r9
+
+			# Check if use register flag is not set
+			testw $FLAG_USE_REGISTER, 6(%r8)
+			jnz 1f
+
+			# Check if instruction supports registers
+			cmpb $OP_CODE_OUT, %r9b
+			jl sp_compile_registers_loop_inner
+
+			# Check if the address is the same
+			shrq $16, %r9
+			cmpl %edi, %r9d
+			jne 1f
+
+			# Set flag and inset register number
+			orw $FLAG_USE_REGISTER, 6(%r8)
+			movl %ecx, 2(%r8) # Overwrite the address
+			1:
+
+			# End condition of inner loop
+			testw $FLAG_MAKE_REGISTER_LOOP, 6(%r8)
+			jnz sp_compile_registers_loop_inner_end
+			jmp sp_compile_registers_loop_inner
+		
+		sp_compile_registers_loop_inner_end:
+		write_instruction_load %edi, %ecx
+		pushq %rdi # Push address of instruction to use in the for instruction
+		incb %cl # Increment register count
+		cmpb $MAX_REGISTER_COUNT, %cl # Check if we have exhausted all registers
+		jae sp_compile_registers_loop_end
+
+		sp_compile_registers_loop_end_condition:
+		testw $FLAG_MAKE_REGISTER_LOOP, 6(%rax)
+		jz sp_compile_registers_loop
+	
+	sp_compile_registers_loop_end:
+	pushq %rcx # Push register count for for instruction to use
+
+	sp_compile_if_write:
+	pushq %r13 # Push address the for has to jump to
 	jmp compile_second_pass_loop
 
 sp_compile_for:
-	write_instruction_for
-	popq %rdx # Get address of first instruction after if instruction
-	write_jump_offset %r13, -4, %rdx
-	write_jump_offset %rdx, -4, %r13
+	movq %rdx, %rcx # Get flags
+	shrq $48, %rcx
+	testw $FLAG_USE_REGISTER, %cx
+
+	# Write for instruction
+	jz 100f
+	shrq $16, %rdx # Get register
+	write_instruction_for_reg %edx
+	jmp 200f
+	100:
+	write_instruction_for_addr
+	200:
+
+	popq %rax # Get address of first instruction after if instruction
+	write_jump_offset %r13, -4, %rax
+
+	testw $FLAG_MAKE_REGISTER_LOOP, %cx
+	jnz 100f
+
+	write_jump_offset %rax, -4, %r13
+	jmp compile_second_pass_loop
+
+	100:
+	popq %rdx # Get amount of registers used
+
+	# Set jump address in if instruction
+	shlq $3, %rdx # Multiply by INSTRUCTION_SIZE_LOAD or INSTRUCTION_SIZE_STORE, which are both 8
+	subl %edx, %eax # Decrement source by the size of the load instructions
+	addl %edx, %r13d # Increment destination by the size of the load instructions
+	write_jump_offset %rax, -4, %r13
+	subl %edx, %r13d # Restore write pointer
+	shrq $3, %rdx # Restore register count
+
+	sp_compile_for_loop:
+		decq %rdx
+		popq %rax # Get address
+		write_instruction_store %eax, %edx
+		test %rdx, %rdx
+		jnz sp_compile_for_loop
+	jmp compile_second_pass_loop
+
+sp_compile_plus:
+	movb %dh, %al # Get amount
+	shrq $16, %rdx # Get memory pointer offset or register to use
+
+	movq %rdx, %rcx # Get flags
+	shrq $32, %rcx
+	testw $FLAG_USE_REGISTER, %cx # Test if we need to use a register
+	jz 100f
+	write_instruction_plus_reg %al, %edx
+	jmp compile_second_pass_loop
+	100:
+	write_instruction_plus_addr %al, %edx
 	jmp compile_second_pass_loop
 	
 sp_compile_set:
 	movb %dh, %al # Get amount
 	shrq $16, %rdx # Get memory pointer offset
-	write_instruction_set %al, %edx
+
+	movq %rdx, %rcx # Get flags
+	shrq $32, %rcx
+	testw $FLAG_USE_REGISTER, %cx # Test if we need to use a register
+	jz 100f
+	write_instruction_set_reg %al, %edx
+	jmp compile_second_pass_loop
+	100:
+	write_instruction_set_addr %al, %edx
 	jmp compile_second_pass_loop
 
 sp_compile_load_loop_count:
 	movb %dh, %al # Get amount
 	shrq $16, %rdx # Get memory pointer offset
-	write_load_loop_count %al, %edx
+
+	movq %rdx, %rcx # Get flags
+	shrq $32, %rcx
+	testw $FLAG_USE_REGISTER, %cx # Test if we need to use a register
+	jz 100f
+	write_load_loop_count_reg %al, %edx
+	jmp compile_second_pass_loop
+	100:
+	write_load_loop_count_addr %al, %edx
 	jmp compile_second_pass_loop
 
 sp_compile_mult_add:
 	movb %dh, %al # Get amount
 	shrq $16, %rdx # Get memory pointer offset
-	write_mult_add %al, %edx
+
+	movq %rdx, %rcx # Get flags
+	shrq $32, %rcx
+	testw $FLAG_USE_REGISTER, %cx # Test if we need to use a register
+	jz 100f
+	write_mult_add_reg %al, %edx
+	jmp compile_second_pass_loop
+	100:
+	write_mult_add_addr %al, %edx
 	jmp compile_second_pass_loop
 
-sp_compile_scan:
-	shrq $16, %rdx # Get memory pointer offset
-	write_scan %edx
-	jmp compile_second_pass_loop
 
 ##############################################################################################################################################
 # Execute
