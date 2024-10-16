@@ -18,18 +18,20 @@
 
 # Comment out here to switch off statistics
 .macro SET_INTERMEDIATE_SRC_SIZE_STAT
-	// movq %r12, intermediate_src_size
+	subq -48(%rbp), %r13
+	movq %r13, intermediate_src_size
+	addq -48(%rbp), %r13
 .endm
 
 .macro INCR_EXECUTED_OPERATIONS_STAT
-	// incq executed_operations
+	incq executed_operations
 .endm
 
 .macro GET_TIME
-	// movq $228, %rax # clock_gettime
-	// movq $0, %rdi
-	// movq $compile_time_out, %rsi
-	// syscall
+	movq $228, %rax # clock_gettime
+	movq $0, %rdi
+	movq $compile_time_out, %rsi
+	syscall
 .endm
 
 # Comment out here to switch on/off decompiling
@@ -66,21 +68,22 @@ decomile_intermediate_src:
 
 .data
 .align 8
-runtime_memory: .skip 30000, 0
+intermediate_src: .skip 35536, 0 # Can use the output buffer too since it is independent from the first pass of the compilation and does not require initialization
 output_buffer: .skip 30000, 0
+runtime_memory: .skip 30000, 0
 
 .text
 
 
 
 ##############################################################################################################################################
-# Brainfuck
+# Read and first pass compilation
 ##############################################################################################################################################
-.macro compile_char_simple char jmp_table_index initial_repetition_count
+.macro compile_char_simple char compiler_label initial_repetition_count
 compile_char_\char:
 	movq %r15, %rax # Copy last read instruction
 	movq %rbx, %rdx # Copy instruction repetition counter into %rdx for the intructions to use
-	movq $\jmp_table_index, %r15 # Set last read instruction
+	movq $\compiler_label, %r15 # Set last read instruction
 	movq $\initial_repetition_count, %rbx # Set instruction repetition counter to initial value
 	cmpq $0, %rdx # If instruction repetition counter is 0, skip
 	je read_loop
@@ -132,29 +135,11 @@ brainfuck:
 	PROLOGUE
 
 	# Free up %r12-15 and rbx
-	push %r12 # -8
-	push %r13 # -24 Becomes executable source write pointer
-	push %r14 # -16 Becomes brainfuck source pointer
+	push %r12 # -8  Becomes intermediate source write pointer
+	push %r13 # -16 Becomes maximum executable memory size
+	push %r14 # -24 Becomes brainfuck source pointer
 	push %r15 # -32 Becomes last read instruction
 	push %rbx # -40 Becomes instruction repetition counter
-
-	movq %rdi, %r14 # Save brainfuck source pointer
-
-	# Allocate executable memory
-    movq $9, %rax      # Syscall number for mmap
-    movq $0, %rdi      # Addr = NULL
-    movq $0x100000, %rsi # Set length to 65546
-    movq $0x7, %rdx    # Prot = PROT_READ | PROT_WRITE | PROT_EXEC
-    movq $0x62, %r10   # Flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_32BIT
-    movq $-1, %r8      # Fd = -1 (no file descriptor)
-    movq $0, %r9       # Offset = 0
-    syscall
-	movq %rax, %r13 # Save executable source block
-	push %r13 # -48 Save executable source block
-
-	# Write 'xor %r13, %r13' into executable memory as first instruction
-	movl $0x00ED314D, (%r13)
-	addq $3, %r13 # Increment executable source block
 
 	# Each bracket frame contains 24 bytes. The first quad contain the previous %rbp. The second quad are used to store 
 	# the address of the if statement. The next 4 bytes are used to keep track of the total memory pointer movement. 
@@ -172,8 +157,13 @@ brainfuck:
 	vmovdqa read_repetitions_init_table + 96, %ymm3
 
 	# Init loop variables
+	movq $intermediate_src, %r12 # Init intermediate source write pointer
+	movq $4, %r13 # Init at 4 for the init of %13 and the ret
+	movq %rdi, %r14 # Save brainfuck source pointer
 	movq $read_loop, %r15 # Last read instruction
 	movq $0, %rbx # The instruction repetition counter
+
+	# Loop through brainfuck source
 	decq %r14 # Decrement brainfuck source by one to increment to 0 in loop
 	movb $0, %al
 read_loop_end_condition:
@@ -192,39 +182,6 @@ read_loop:
 	shl $3, %rax
 	jmp *compile_char_jmp_table(%rax)
 
-compile_return:
-	# Write ret instruction
-	movb $0xC3, (%r13)
-
-	# Pop final bracket frame
-	movq %rbp, %rsp
-	popq %rbp
-
-	SET_INTERMEDIATE_SRC_SIZE_STAT # Comment out above
-	DECOMPILER # Comment out above
-	GET_TIME # Comment out above
-
-	# For the run part, %r12 will contain the memory pointer and %r13 will contain the output length counter.
-	# Call the executable source block
-	movq $runtime_memory, %r12
-	movq -48(%rbp), %r13 # Get start of executable source block
-	call *%r13
-
-	# Print output
-	movq $1, %rax
-	movq $1, %rdi
-	movq $output_buffer, %rsi
-	movq %r13, %rdx
-	syscall
-
-	# Restore %r12-15 and %rbx
-	movq -8(%rbp), %r12
-	movq -16(%rbp), %r13
-	movq -24(%rbp), %r14
-	movq -32(%rbp), %r15
-	movq -40(%rbp), %rbx
-	EPILOGUE
-
 compile_char_simple if compile_if 1 # Also contains the labels
 compile_char_simple for compile_for 1
 compile_char_simple left compile_right -1
@@ -236,7 +193,7 @@ compile_char_simple out compile_out 1
 
 compile_char_null:
 	decq %r14 # Decrement src ptr to guarantee that the next loop cicle will also read a null termination character
-	compile_char_simple return compile_return 1
+	compile_char_simple return compile_second_pass 1
 
 compile_char_left_repetition:
 	cmpq $compile_right, %r15 # Check if last instruction was a right
@@ -342,6 +299,360 @@ compile_char_jmp_table:
 
 
 ##############################################################################################################################################
+# Compile
+##############################################################################################################################################
+.macro write_intermediate_instruction op_code
+	movb \op_code, (%r12)
+	addq $8, %r12 # Increment intermediate write pointer
+.endm
+
+.macro write_intermediate_instruction_amount op_code, amount
+	movb \amount, 1(%r12)
+	write_intermediate_instruction \op_code
+.endm
+
+.macro write_intermediate_instruction_offset op_code, offset
+	movl \offset, 2(%r12)
+	write_intermediate_instruction \op_code
+.endm
+
+.macro write_intermediate_instruction_amount_offset op_code, amount, offset
+	movl \offset, 2(%r12)
+	write_intermediate_instruction_amount \op_code, \amount
+.endm
+
+.macro compile_pop_mem_movement
+	movl -12(%rbp), %eax # Get memory pointer offset from bracket frame
+	testl %eax, %eax # If memory pointer offset is 0, skip
+	jz 1f
+
+	# Memory pointer is not set to zero. That will be done by compile_for if it
+	# has been found that the loop cannot be optimized. Same goes for incrementing
+	# the maximum size of the executable memory.
+	write_intermediate_instruction_offset $OP_CODE_RIGHT, %eax # Write instruction
+1:
+.endm
+
+compile_if:
+	compile_pop_mem_movement
+
+	# Write instruction
+	movw $0, 6(%r12) # Set flags to 0
+	write_intermediate_instruction $OP_CODE_IF
+	addq $INSTRUCTION_SIZE_IF, %r13 # Increment maximum executable memory size
+
+	# Write new bracket frame
+	pushq %rbp
+	movq %rsp, %rbp
+	pushq %r12 # Push new empty bracket frame
+	pushq $0
+	jmp read_loop
+
+compile_for:
+	movq -16(%rbp), %rax # Get total memory movement and flags
+	movq %rax, %rdx # Extract total memory movement
+	shrq $32, %rdx
+	cmpl $0, %edx # Check if it is zero
+	je 1f
+	orl $LOOP_HAS_TOTAL_RIGHT, %eax # If so, set flag
+1:
+	shll $3, %eax # Multiply flags by 8 and use as an index into the jump table
+	jmp *compile_loop_jmp_table(%eax)
+
+
+compile_right:
+	addl %edx, -12(%rbp) # Increment memory pointer offset in bracket frame
+	jmp read_loop
+
+compile_plus:
+	movl -12(%rbp), %eax # Get offset from memory pointer
+	write_intermediate_instruction_amount_offset $OP_CODE_PLUS, %dl, %eax
+	addq $INSTRUCTION_SIZE_PLUS, %r13 # Increment maximum executable memory size
+	orl $LOOP_CONTAINS_PLUS, -16(%rbp) # Loop contains a plus instruction
+	jmp read_loop
+
+compile_in:
+	movl -12(%rbp), %eax # Get offset from memory pointer
+	write_intermediate_instruction_offset $OP_CODE_IN, %eax
+	addq $INSTRUCTION_SIZE_IN, %r13 # Increment maximum executable memory size
+	orl $LOOP_CONTAINS_IO, -16(%rbp) # Loop contains a in instruction
+	jmp read_loop
+
+compile_out:
+	movl -12(%rbp), %eax # Get offset from memory pointer
+	write_intermediate_instruction_offset $OP_CODE_OUT, %eax
+	addq $INSTRUCTION_SIZE_OUT, %r13 # Increment maximum executable memory size
+	orl $LOOP_CONTAINS_IO, -16(%rbp) # Loop contains a out instruction
+	jmp read_loop
+
+
+##############################################################################################################################################
+# Compile loops
+##############################################################################################################################################
+.macro move_before_if_instruction src_pointer
+	subq $8, \src_pointer # Move pointer to the if instruction
+	cmpb $OP_CODE_RIGHT, -8(\src_pointer) # Check if the previous instruction is a right instruction
+	jne 1f
+	subq $8, \src_pointer # If so, move to it aswell
+1:
+.endm
+
+.macro pop_bracket_frame
+	movl -16(%rbp), %r8d # Get flags
+	movq %rbp, %rsp # Pop bracket frame
+	popq %rbp
+	andl $(LOOP_CONTAINS_SCAN), %r8d # Propagate appropriate flags
+	orl %r8d, -16(%rbp) # Inset into parent bracket frame
+.endm
+
+################################## None ##################################
+compile_for_no_optimizations:
+	compile_pop_mem_movement
+
+	write_intermediate_instruction $OP_CODE_FOR
+	pop_bracket_frame
+	movl $0, -12(%rbp) # Reset memory pointer to match the movement before the if
+	addq $INSTRUCTION_SIZE_FOR + 2 * INSTRUCTION_SIZE_RIGHT, %r13 # Increment maximum executable memory size
+
+	orl $LOOP_CONTAINS_LOOP, -16(%rbp) # Loop contains a inner loop
+	jmp read_loop
+
+
+################################## Mult ##################################
+compile_loop_mult:
+	# Move back the write pointer
+	movq -8(%rbp), %rax # Get address of the first instruction after if, and keep a copy of it in %rax
+	movq %r12, %r10 # Preserve a copy of the current write pointer in %r10
+	movq %rax, %r12 # Then move it back to the if instruction or the move instruction before the if if present
+	move_before_if_instruction %r12
+
+	# Pop current bracket frame and get memory pointer offset of parent bracket frame into %rdx
+	pop_bracket_frame
+	movl -12(%rbp), %edx
+
+	# Check if it is a set zero instruction
+	subq %rax, %r10 # Get the amount of instructions written
+	cmpq $8, %r10 # If only one instruction is written, it is a set zero instruction
+	je compile_loop_set_zero
+	addq %rax, %r10 # Restore the old write pointer
+
+	/*
+		We know every instuction is 8 bytes long. So if the if instruction gets replaced by the load loop count instruction, then every
+		following instruction will replace itself, or a previously read instruction, but never one that was yet to be read. So reading and
+		writing in one loop is safe. %rax has the address of the first instruction after the if instruction, it be the read pointer through 
+		the loop. %rdx has the memory pointer offset of the parent bracket frame. %r10 has the old write pointer to use as end condition 
+		for the loop. %r11 will hold the location where the load loop count instruction is to be inserted. Finally, %rcx will keep track 
+		of the source add count.
+	*/
+
+	# Loop through all the plus instructions
+	movb $0, %cl # Set source add count to 0
+	subq $8, %rax # Decrement %rax to be incremented on entry in the loop
+	movq %r12, %r11 # Set %r11 to the location where the load loop count instruction is to be inserted
+	addq $8, %r12 # Increment %r12 to make space for the load loop count instruction
+compile_mult_loop:
+	# Increment and end condition
+	addq $8, %rax
+	cmpq %rax, %r10
+	je compile_mult_loop_end
+
+	# Read next instruction
+	movl 2(%rax), %edi # Get the memory pointer offset of the instruction
+	testl %edi, %edi # Check if it is a source add instruction
+	jz compile_mult_loop_source_add
+	
+	movb 1(%rax), %sil # Get amount of the plus instruction
+	addl %edx, %edi # Add the memory pointer offset of the parent bracket frame
+	write_intermediate_instruction_amount_offset $OP_CODE_MULT_ADD, %sil, %edi
+	addq $INSTRUCTION_SIZE_MULT_ADD_POW2, %r13 # Increment maximum executable memory size, pow2 is the biggest variant of the instruction
+	jmp compile_mult_loop
+
+compile_mult_loop_source_add:
+	addb 1(%rax), %cl # Increment source add count
+	jmp compile_mult_loop
+
+compile_mult_loop_end:
+	# Write set zero instruction
+	write_intermediate_instruction_amount_offset $OP_CODE_SET, $0, %edx
+
+	# Write load loop count instruction
+	shlq $16, %rdx # Shift memory pointer offset 2 bytes left
+	movb %cl, %dh # Insert source add count
+	movb $OP_CODE_LOAD_LOOP_COUNT, %dl # Insert opcode
+	movq %rdx, (%r11) # Insert instruction
+
+ 	# Increment maximum executable memory size, load loop count scan is the biggest variant of the instruction
+	addq $INSTRUCTION_SIZE_SET + INSTRUCTION_SIZE_LOAD_LOOP_COUNT_SCAN, %r13
+	orl $LOOP_CONTAINS_SET | LOOP_CONTAINS_MULT, -16(%rbp) # Loop contains a set zero and a multiplication
+	jmp read_loop
+
+
+################################## Set zero ##################################
+compile_loop_set_zero:
+	# Write set zero
+	addl 2(%rax), %edx # Take parent bracket memory pointer offset and add to it the offset from this plus instruction to get the offset to write
+	write_intermediate_instruction_amount_offset $OP_CODE_SET, $0, %edx
+	addq $INSTRUCTION_SIZE_SET, %r13 # Increment maximum executable memory size
+	orl $LOOP_CONTAINS_SET, -16(%rbp) # Loop contains a set zero
+	jmp read_loop
+
+
+
+
+// ################################## Scan ##################################
+compile_loop_scan:	
+	movl -12(%rbp), %eax # Read memory pointer offset of right instruction
+	subq $8, %r12 # Go back to the if instruction
+	pop_bracket_frame
+	movl $0, -12(%rbp) # Reset memory pointer to match the movement before the if
+	addq $INSTRUCTION_SIZE_RIGHT + INSTRUCTION_SIZE_SCAN_LEFT_3, %r13 # Increment maximum executable memory size, left3 is the biggest variant of the instruction
+
+	write_intermediate_instruction_offset $OP_CODE_SCAN, %eax
+	orl $LOOP_CONTAINS_SCAN, -16(%rbp)
+	jmp read_loop
+
+
+
+.equ LOOP_CONTAINS_PLUS, 0x1
+.equ LOOP_CONTAINS_IO, 0x2
+.equ LOOP_CONTAINS_SET, 0x4
+.equ LOOP_CONTAINS_MULT, 0x8
+.equ LOOP_CONTAINS_LOOP, 0x10
+.equ LOOP_HAS_TOTAL_RIGHT, 0x20
+.equ LOOP_CONTAINS_SCAN, 0x40
+
+compile_loop_jmp_table:
+	.quad compile_for_no_optimizations # 0x00
+	.quad compile_loop_mult			   # 0x01 Mult or set zero
+	.quad compile_for_no_optimizations # 0x02
+	.quad compile_for_no_optimizations # 0x03
+	.quad compile_for_no_optimizations # 0x04
+	.quad compile_for_no_optimizations # 0x05
+	.quad compile_for_no_optimizations # 0x06
+	.quad compile_for_no_optimizations # 0x07
+	.quad compile_for_no_optimizations # 0x08
+	.quad compile_for_no_optimizations # 0x09
+	.quad compile_for_no_optimizations # 0x0A
+	.quad compile_for_no_optimizations # 0x0B
+	.quad compile_for_no_optimizations # 0x0C
+	.quad compile_for_no_optimizations # 0x0D
+	.quad compile_for_no_optimizations # 0x0E
+	.quad compile_for_no_optimizations # 0x0F
+	.quad compile_for_no_optimizations # 0x10
+	.quad compile_for_no_optimizations # 0x11
+	.quad compile_for_no_optimizations # 0x12
+	.quad compile_for_no_optimizations # 0x13
+	.quad compile_for_no_optimizations # 0x14
+	.quad compile_for_no_optimizations # 0x15
+	.quad compile_for_no_optimizations # 0x16
+	.quad compile_for_no_optimizations # 0x17
+	.quad compile_for_no_optimizations # 0x18
+	.quad compile_for_no_optimizations # 0x19
+	.quad compile_for_no_optimizations # 0x1A
+	.quad compile_for_no_optimizations # 0x1B
+	.quad compile_for_no_optimizations # 0x1C
+	.quad compile_for_no_optimizations # 0x1D
+	.quad compile_for_no_optimizations # 0x1E
+	.quad compile_for_no_optimizations # 0x1F
+	.quad compile_loop_scan			   # 0x20 Scan loop
+	.quad compile_for_no_optimizations # 0x21
+	.quad compile_for_no_optimizations # 0x22
+	.quad compile_for_no_optimizations # 0x23
+	.quad compile_for_no_optimizations # 0x24
+	.quad compile_for_no_optimizations # 0x25
+	.quad compile_for_no_optimizations # 0x26
+	.quad compile_for_no_optimizations # 0x27
+	.quad compile_for_no_optimizations # 0x28
+	.quad compile_for_no_optimizations # 0x29
+	.quad compile_for_no_optimizations # 0x2A
+	.quad compile_for_no_optimizations # 0x2B
+	.quad compile_for_no_optimizations # 0x2C
+	.quad compile_for_no_optimizations # 0x2D
+	.quad compile_for_no_optimizations # 0x2E
+	.quad compile_for_no_optimizations # 0x2F
+	.quad compile_for_no_optimizations # 0x30
+	.quad compile_for_no_optimizations # 0x31
+	.quad compile_for_no_optimizations # 0x32
+	.quad compile_for_no_optimizations # 0x33
+	.quad compile_for_no_optimizations # 0x34
+	.quad compile_for_no_optimizations # 0x35
+	.quad compile_for_no_optimizations # 0x36
+	.quad compile_for_no_optimizations # 0x37
+	.quad compile_for_no_optimizations # 0x38
+	.quad compile_for_no_optimizations # 0x39
+	.quad compile_for_no_optimizations # 0x3A
+	.quad compile_for_no_optimizations # 0x3B
+	.quad compile_for_no_optimizations # 0x3C
+	.quad compile_for_no_optimizations # 0x3D
+	.quad compile_for_no_optimizations # 0x3E
+	.quad compile_for_no_optimizations # 0x3F
+	.quad compile_for_no_optimizations # 0x40
+	.quad compile_for_no_optimizations # 0x41
+	.quad compile_for_no_optimizations # 0x42
+	.quad compile_for_no_optimizations # 0x43
+	.quad compile_for_no_optimizations # 0x44
+	.quad compile_for_no_optimizations # 0x45
+	.quad compile_for_no_optimizations # 0x46
+	.quad compile_for_no_optimizations # 0x47
+	.quad compile_for_no_optimizations # 0x48
+	.quad compile_for_no_optimizations # 0x49
+	.quad compile_for_no_optimizations # 0x4A
+	.quad compile_for_no_optimizations # 0x4B
+	.quad compile_for_no_optimizations # 0x4C
+	.quad compile_for_no_optimizations # 0x4D
+	.quad compile_for_no_optimizations # 0x4E
+	.quad compile_for_no_optimizations # 0x4F
+	.quad compile_for_no_optimizations # 0x50
+	.quad compile_for_no_optimizations # 0x51
+	.quad compile_for_no_optimizations # 0x52
+	.quad compile_for_no_optimizations # 0x53
+	.quad compile_for_no_optimizations # 0x54
+	.quad compile_for_no_optimizations # 0x55
+	.quad compile_for_no_optimizations # 0x56
+	.quad compile_for_no_optimizations # 0x57
+	.quad compile_for_no_optimizations # 0x58
+	.quad compile_for_no_optimizations # 0x59
+	.quad compile_for_no_optimizations # 0x5A
+	.quad compile_for_no_optimizations # 0x5B
+	.quad compile_for_no_optimizations # 0x5C
+	.quad compile_for_no_optimizations # 0x5D
+	.quad compile_for_no_optimizations # 0x5E
+	.quad compile_for_no_optimizations # 0x5F
+	.quad compile_for_no_optimizations # 0x60
+	.quad compile_for_no_optimizations # 0x61
+	.quad compile_for_no_optimizations # 0x62
+	.quad compile_for_no_optimizations # 0x63
+	.quad compile_for_no_optimizations # 0x64
+	.quad compile_for_no_optimizations # 0x65
+	.quad compile_for_no_optimizations # 0x66
+	.quad compile_for_no_optimizations # 0x67
+	.quad compile_for_no_optimizations # 0x68
+	.quad compile_for_no_optimizations # 0x69
+	.quad compile_for_no_optimizations # 0x6A
+	.quad compile_for_no_optimizations # 0x6B
+	.quad compile_for_no_optimizations # 0x6C
+	.quad compile_for_no_optimizations # 0x6D
+	.quad compile_for_no_optimizations # 0x6E
+	.quad compile_for_no_optimizations # 0x6F
+	.quad compile_for_no_optimizations # 0x70
+	.quad compile_for_no_optimizations # 0x71
+	.quad compile_for_no_optimizations # 0x72
+	.quad compile_for_no_optimizations # 0x73
+	.quad compile_for_no_optimizations # 0x74
+	.quad compile_for_no_optimizations # 0x75
+	.quad compile_for_no_optimizations # 0x76
+	.quad compile_for_no_optimizations # 0x77
+	.quad compile_for_no_optimizations # 0x78
+	.quad compile_for_no_optimizations # 0x79
+	.quad compile_for_no_optimizations # 0x7A
+	.quad compile_for_no_optimizations # 0x7B
+	.quad compile_for_no_optimizations # 0x7C
+	.quad compile_for_no_optimizations # 0x7D
+	.quad compile_for_no_optimizations # 0x7E
+	.quad compile_for_no_optimizations # 0x7F
+
+
+##############################################################################################################################################
 # Write instruction
 ##############################################################################################################################################
 .equ INSTRUCTION_SIZE_RIGHT, 7
@@ -438,7 +749,7 @@ byte_code_set:
 .macro write_instruction_set amount address
 	movl $0x2484C641, (%r13)
 	movl \address, 4(%r13)
-	movb $\amount, 8(%r13)
+	movb \amount, 8(%r13)
 	addq $INSTRUCTION_SIZE_SET, %r13
 .endm
 
@@ -638,7 +949,7 @@ byte_code_mult_add:
 ################################## Scan ##################################
 .equ INSTRUCTION_SIZE_SCAN_LOOP, 21
 .align 8
-byte_code_scan_right_loop:
+byte_code_scan_loop:
 	.byte 0x49, 0x81, 0xEC, 0x00, 0x00, 0x00, 0x00		#0  subq $right_count, %r12
 	.byte 0x49, 0x81, 0xC4, 0x00, 0x00, 0x00, 0x00		#7  1: addq $right_count, %r12
 	.byte 0x41, 0x80, 0x3C, 0x24, 0x00					#14 cmpb $0, (%r12)
@@ -647,7 +958,7 @@ byte_code_scan_right_loop:
 .macro write_instruction_scan_loop right_count
 	movq $3, %rcx # Quad count
 	movq %r13, %rdi # Destination
-	movq $byte_code_scan_right_loop, %rsi # Source
+	movq $byte_code_scan_loop, %rsi # Source
 	rep movsq
 	movl \right_count, 3(%r13)
 	movl \right_count, 10(%r13)
@@ -901,342 +1212,170 @@ byte_code_scan_left_pow2:
 3:
 .endm
 
-##############################################################################################################################################
-# Compile
-##############################################################################################################################################
-.macro compile_pop_mem_movement
-	movl -12(%rbp), %eax # Get memory pointer offset from bracket frame
-	cmpl $0, %eax # If memory pointer offset is 0, skip
-	je 1f
-
-	# Memory pointer is not set to zero. That will be done by compile_for if it
-	# is confirmed that the loop cannot be optimized.
-	write_instruction_right %eax # Write instruction
-1:
-.endm
-
-compile_if:
-	compile_pop_mem_movement
-
-	pushq %rbp
-	movq %rsp, %rbp
-	pushq %r13 # Push new empty bracket frame
-	pushq $0
-	write_instruction_if
-
-	jmp read_loop
-
-compile_for:
-	movq -16(%rbp), %rax # Get total memory movement and flags
-	movq %rax, %rdx # Extract total memory movement
-	shrq $32, %rdx
-	cmpl $0, %edx # Check if it is zero
-	je 1f
-	orl $LOOP_HAS_TOTAL_RIGHT, %eax # If so, set flag
-1:
-	shll $3, %eax # Multiply flags by 8 and use as an index into the jump table
-	jmp *compile_loop_jmp_table(%eax)
-
-
-compile_right:
-	addl %edx, -12(%rbp) # Increment memory pointer offset in bracket frame
-	jmp read_loop
-
-compile_plus:
-	movl -12(%rbp), %eax # Get offset from memory pointer
-	write_instruction_plus %dl %eax
-	orl $LOOP_CONTAINS_PLUS, -16(%rbp) # Loop contains a plus instruction
-	jmp read_loop
-
-compile_in:
-	movl -12(%rbp), %eax # Get offset from memory pointer
-	write_instruction_in %eax
-	orl $LOOP_CONTAINS_IO, -16(%rbp) # Loop contains a in instruction
-	jmp read_loop
-
-compile_out:
-	movl -12(%rbp), %eax # Get offset from memory pointer
-	write_instruction_out %eax
-	orl $LOOP_CONTAINS_IO, -16(%rbp) # Loop contains a out instruction
-	jmp read_loop
-
 
 ##############################################################################################################################################
-# Compile loops
+# Second pass
 ##############################################################################################################################################
-.macro remove_right_instruction src_pointer
-	movl -INSTRUCTION_SIZE_RIGHT(\src_pointer), %r8d # Check if previous instruction was a move instruction
-	andl $0x00FFFFFF, %r8d # And out the first bit of the amount so that only the opcode bits are there
-	cmpl $0x00C48141, %r8d
-	jne 1f
-	subq $INSTRUCTION_SIZE_RIGHT, \src_pointer
-1:
-.endm
+compile_second_pass:
+	# %r12 becomes the intermediate source
+	# %r13 becomes the executable source block
+	# The next instruction is passed through %rdx
 
-.macro pop_bracket_frame
-	movl -16(%rbp), %r8d # Get flags
-	movq %rbp, %rsp # Pop bracket frame
+	# Write exit
+	write_intermediate_instruction $OP_CODE_EXIT
+
+	# Pop final bracket frame
+	movq %rbp, %rsp
 	popq %rbp
-	andl $(LOOP_CONTAINS_SCAN), %r8d # Propagate appropriate flags
-	orl %r8d, -16(%rbp) # Inset into parent bracket frame
-.endm
+	
+	# Allocate executable memory
+    movq $9, %rax      # Syscall number for mmap
+    movq $0, %rdi      # Addr = NULL
+    movq %r13, %rsi	   # Set length from %r13
+    movq $0x7, %rdx    # Prot = PROT_READ | PROT_WRITE | PROT_EXEC
+    movq $0x62, %r10   # Flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_32BIT
+    movq $-1, %r8      # Fd = -1 (no file descriptor)
+    movq $0, %r9       # Offset = 0
+    syscall
+	movq %rax, %r13 # Save executable source block
+	pushq %r13 # -48 Save executable source block
 
-################################## None ##################################
-compile_for_no_optimizations:
-	compile_pop_mem_movement
+	# Write 'xor %r13, %r13' into executable memory as first instruction
+	movl $0x00ED314D, (%r13)
+	addq $3, %r13 # Increment executable source block
 
+	# Loop through intermediate source
+	movq $intermediate_src - 8, %r12 # Init %12 to the start of intermediate source
+compile_second_pass_loop:
+	# Get next instruction
+	addq $8, %r12 # Increment index in intermediate source
+	movq (%r12), %rdx
+
+	# Jump into jump table
+	movzb %dl, %rax
+	shlq $3, %rax
+	jmp *sp_compile_jmp_table(%rax)
+
+
+/*
+	Each instruction contains 8 bytes: the first is op code. The next is the amount, regardless of if the instruction requires it.
+	The next 4 bytes are the memory pointer offset, regardless of if the instruction requires it. And the final 2 bytes contain
+	some flags the instruction might use.
+*/
+.equ OP_CODE_EXIT, 0
+.equ OP_CODE_PLUS, 1
+.equ OP_CODE_RIGHT, 2
+.equ OP_CODE_IN, 3
+.equ OP_CODE_OUT, 4
+.equ OP_CODE_IF, 5
+.equ OP_CODE_FOR, 6
+.equ OP_CODE_SET, 7
+.equ OP_CODE_LOAD_LOOP_COUNT, 8
+.equ OP_CODE_MULT_ADD, 9
+.equ OP_CODE_SCAN, 10
+
+
+sp_compile_jmp_table:
+	.quad sp_compile_exit
+	.quad sp_compile_plus
+	.quad sp_compile_right
+	.quad sp_compile_in
+	.quad sp_compile_out
+	.quad sp_compile_if
+	.quad sp_compile_for
+	.quad sp_compile_set
+	.quad sp_compile_load_loop_count
+	.quad sp_compile_mult_add
+	.quad sp_compile_scan
+
+
+sp_compile_exit:
+	# Write ret
+	movb $0xC3, (%r13)
+
+	SET_INTERMEDIATE_SRC_SIZE_STAT # Comment out above
+	DECOMPILER # Comment out above
+	GET_TIME # Comment out above
+
+	jmp execute
+
+sp_compile_plus:
+	movb %dh, %al # Get amount
+	shrq $16, %rdx # Get memory pointer offset
+	write_instruction_plus %al, %edx
+	jmp compile_second_pass_loop
+
+sp_compile_right:
+	shrq $16, %rdx # Get amount
+	write_instruction_right %edx
+	jmp compile_second_pass_loop
+
+sp_compile_in:
+	shrq $16, %rdx # Get amount
+	write_instruction_in %edx
+	jmp compile_second_pass_loop
+
+sp_compile_out:
+	shrq $16, %rdx # Get memory pointer offset
+	write_instruction_out %edx
+	jmp compile_second_pass_loop
+
+sp_compile_if:
+	write_instruction_if
+	pushq %r13 # Push address of first instruction after if instruction
+	jmp compile_second_pass_loop
+
+sp_compile_for:
 	write_instruction_for
-
-	movq -8(%rbp), %rdx # Get address of if instruction
-	addq $INSTRUCTION_SIZE_IF, %rdx # Move address to instruction after if
+	popq %rdx # Get address of first instruction after if instruction
 	write_jump_offset %r13, -4, %rdx
 	write_jump_offset %rdx, -4, %r13
+	jmp compile_second_pass_loop
+	
+sp_compile_set:
+	movb %dh, %al # Get amount
+	shrq $16, %rdx # Get memory pointer offset
+	write_instruction_set %al, %edx
+	jmp compile_second_pass_loop
 
-	pop_bracket_frame
-	movl $0, -12(%rbp) # Reset memory pointer to match the movement before the if
+sp_compile_load_loop_count:
+	movb %dh, %al # Get amount
+	shrq $16, %rdx # Get memory pointer offset
+	write_load_loop_count %al, %edx
+	jmp compile_second_pass_loop
 
-	orl $LOOP_CONTAINS_LOOP, -16(%rbp) # Loop contains a inner loop
-	jmp read_loop
+sp_compile_mult_add:
+	movb %dh, %al # Get amount
+	shrq $16, %rdx # Get memory pointer offset
+	write_mult_add %al, %edx
+	jmp compile_second_pass_loop
 
+sp_compile_scan:
+	shrq $16, %rdx # Get memory pointer offset
+	write_scan %edx
+	jmp compile_second_pass_loop
 
-################################## Mult ##################################
-compile_loop_mult:
-	# Check if it is a set zero instruction
-	movq %r13, %rdx # Calculate total amount writen by taking the current write pointer
-	movq -8(%rbp), %rax # Subtract the address of the if instruction whilst keeping a
-	subq %rax, %rdx # copy of it in %rax
-	subq $INSTRUCTION_SIZE_IF, %rdx # And subtract the size of the if instruction
-	cmpl $INSTRUCTION_SIZE_PLUS, %edx
-	je compile_loop_set_zero
+##############################################################################################################################################
+# Execute
+##############################################################################################################################################
+execute:
+	# For the run part, %r12 will contain the memory pointer and %r13 will contain the output length counter.
+	# Call the executable source block
+	movq $runtime_memory, %r12
+	movq -48(%rbp), %r13 # Get start of executable source block
+	call *%r13
 
-	pop_bracket_frame
+	# Print output
+	movq $1, %rax
+	movq $1, %rdi
+	movq $output_buffer, %rsi
+	movq %r13, %rdx
+	syscall
 
-	/*
-		We first read out all the plus instruction onto the stack, unless the plus instruction is a source add instruction,
-		then we keep track of it in %r10. After reading, we write back the instructions as a multiplications, with a
-		load loop count instruction beforehand and a set zero instruction after. %r11 will be used as index through the loop.
-		And %rdx will be used to store the original the stack pointer. Meanwhile, %rax will just preserve the address of the
-		if instruction to be used later.
-	*/
-
-	# Loop through all the plus instructions
-	movq %rax, %r11 # Get address of first plus instruction's address
-	addq $INSTRUCTION_SIZE_IF + 4, %r11
-	movb $0, %r10b # Set source add count to 0
-	movq %rsp, %rdx # Preserve stack pointer in %rdx
-compile_mult_read_loop:
-	# End condition
-	cmpq %r13, %r11
-	ja compile_mult_read_loop_end
-
-	# Load address and amount of the plus instruction
-	pushq (%r11) # Push the address and amount of the plus instruction to the stack
-	addq $INSTRUCTION_SIZE_PLUS, %r11 # Increment %r11 by INSTRUCTION_SIZE_PLUS
-	cmpl $0, (%rsp) # Check if it is a source add instruction
-	jne compile_mult_read_loop
-
-	# Increment source add count
-	addb 4(%rsp), %r10b # Increment source add count
-	addq $8, %rsp # Pop the address and amount of the plus instruction
-	jmp compile_mult_read_loop
-compile_mult_read_loop_end:
-
-	# Move write pointer back
-	movq %rax, %r13
-	remove_right_instruction %r13
-
-	# Write load loop count instruction
-	movl -12(%rbp), %eax # Get offset from memory pointer
-	write_load_loop_count %r10b, %eax
-
-	# Write mult add instructions
-compile_mult_write_loop:
-	# End condition
-	cmpq %rdx, %rsp
-	je compile_mult_write_loop_end
-
-	popq %r11 # Get address and amount of plus instruction
-	movq %r11, %r10 # Copy over to %rcx
-	shrq $32, %r10 # Extract amount
-	addl %eax, %r11d # Add memory pointer offset of previoues bracket frame
-	write_mult_add %r10b, %r11d
-	jmp compile_mult_write_loop
-compile_mult_write_loop_end:
-
-	# Write set zero instruction
-	write_instruction_set 0, %eax
-	orl $LOOP_CONTAINS_SET, -16(%rbp) # Loop contains a set zero
-	orl $LOOP_CONTAINS_MULT, -16(%rbp) # Loop contains a multiplication
-	jmp read_loop
-
-
-################################## Set zero ##################################
-compile_loop_set_zero:
-	pop_bracket_frame
-
-	# Calculate offset
-	movl -INSTRUCTION_SIZE_PLUS + 4(%r13), %eax # Get address offset of plus instruction
-	addl -12(%rbp), %eax # Add memory pointer offset
-
-	# Move back the write pointer
-	subq $INSTRUCTION_SIZE_IF + INSTRUCTION_SIZE_PLUS, %r13
-	remove_right_instruction %r13
-
-	# Write set zero
-	write_instruction_set 0 %eax
-	orl $LOOP_CONTAINS_SET, -16(%rbp) # Loop contains a set zero
-	jmp read_loop
-
-
-
-
-################################## Scan ##################################
-compile_loop_scan:	
-	movl -12(%rbp), %eax # Read memory pointer offset of right instruction
-	subq $INSTRUCTION_SIZE_IF, %r13 # Go back to the if instruction
-	pop_bracket_frame
-	movl $0, -12(%rbp) # Reset memory pointer to match the movement before the if
-
-	write_scan %eax
-	orl $LOOP_CONTAINS_SCAN, -16(%rbp)
-	jmp read_loop
-
-
-
-.equ LOOP_CONTAINS_PLUS, 0x1
-.equ LOOP_CONTAINS_IO, 0x2
-.equ LOOP_CONTAINS_SET, 0x4
-.equ LOOP_CONTAINS_MULT, 0x8
-.equ LOOP_CONTAINS_LOOP, 0x10
-.equ LOOP_HAS_TOTAL_RIGHT, 0x20
-.equ LOOP_CONTAINS_SCAN, 0x40
-
-compile_loop_jmp_table:
-	.quad compile_for_no_optimizations # 0x00
-	.quad compile_loop_mult			   # 0x01 Mult or set zero
-	.quad compile_for_no_optimizations # 0x02
-	.quad compile_for_no_optimizations # 0x03
-	.quad compile_for_no_optimizations # 0x04
-	.quad compile_for_no_optimizations # 0x05
-	.quad compile_for_no_optimizations # 0x06
-	.quad compile_for_no_optimizations # 0x07
-	.quad compile_for_no_optimizations # 0x08
-	.quad compile_for_no_optimizations # 0x09
-	.quad compile_for_no_optimizations # 0x0A
-	.quad compile_for_no_optimizations # 0x0B
-	.quad compile_for_no_optimizations # 0x0C
-	.quad compile_for_no_optimizations # 0x0D
-	.quad compile_for_no_optimizations # 0x0E
-	.quad compile_for_no_optimizations # 0x0F
-	.quad compile_for_no_optimizations # 0x10
-	.quad compile_for_no_optimizations # 0x11
-	.quad compile_for_no_optimizations # 0x12
-	.quad compile_for_no_optimizations # 0x13
-	.quad compile_for_no_optimizations # 0x14
-	.quad compile_for_no_optimizations # 0x15
-	.quad compile_for_no_optimizations # 0x16
-	.quad compile_for_no_optimizations # 0x17
-	.quad compile_for_no_optimizations # 0x18
-	.quad compile_for_no_optimizations # 0x19
-	.quad compile_for_no_optimizations # 0x1A
-	.quad compile_for_no_optimizations # 0x1B
-	.quad compile_for_no_optimizations # 0x1C
-	.quad compile_for_no_optimizations # 0x1D
-	.quad compile_for_no_optimizations # 0x1E
-	.quad compile_for_no_optimizations # 0x1F
-	.quad compile_loop_scan			   # 0x20
-	.quad compile_for_no_optimizations # 0x21
-	.quad compile_for_no_optimizations # 0x22
-	.quad compile_for_no_optimizations # 0x23
-	.quad compile_for_no_optimizations # 0x24
-	.quad compile_for_no_optimizations # 0x25
-	.quad compile_for_no_optimizations # 0x26
-	.quad compile_for_no_optimizations # 0x27
-	.quad compile_for_no_optimizations # 0x28
-	.quad compile_for_no_optimizations # 0x29
-	.quad compile_for_no_optimizations # 0x2A
-	.quad compile_for_no_optimizations # 0x2B
-	.quad compile_for_no_optimizations # 0x2C
-	.quad compile_for_no_optimizations # 0x2D
-	.quad compile_for_no_optimizations # 0x2E
-	.quad compile_for_no_optimizations # 0x2F
-	.quad compile_for_no_optimizations # 0x30
-	.quad compile_for_no_optimizations # 0x31
-	.quad compile_for_no_optimizations # 0x32
-	.quad compile_for_no_optimizations # 0x33
-	.quad compile_for_no_optimizations # 0x34
-	.quad compile_for_no_optimizations # 0x35
-	.quad compile_for_no_optimizations # 0x36
-	.quad compile_for_no_optimizations # 0x37
-	.quad compile_for_no_optimizations # 0x38
-	.quad compile_for_no_optimizations # 0x39
-	.quad compile_for_no_optimizations # 0x3A
-	.quad compile_for_no_optimizations # 0x3B
-	.quad compile_for_no_optimizations # 0x3C
-	.quad compile_for_no_optimizations # 0x3D
-	.quad compile_for_no_optimizations # 0x3E
-	.quad compile_for_no_optimizations # 0x3F
-	.quad compile_for_no_optimizations # 0x40
-	.quad compile_for_no_optimizations # 0x41
-	.quad compile_for_no_optimizations # 0x42
-	.quad compile_for_no_optimizations # 0x43
-	.quad compile_for_no_optimizations # 0x44
-	.quad compile_for_no_optimizations # 0x45
-	.quad compile_for_no_optimizations # 0x46
-	.quad compile_for_no_optimizations # 0x47
-	.quad compile_for_no_optimizations # 0x48
-	.quad compile_for_no_optimizations # 0x49
-	.quad compile_for_no_optimizations # 0x4A
-	.quad compile_for_no_optimizations # 0x4B
-	.quad compile_for_no_optimizations # 0x4C
-	.quad compile_for_no_optimizations # 0x4D
-	.quad compile_for_no_optimizations # 0x4E
-	.quad compile_for_no_optimizations # 0x4F
-	.quad compile_for_no_optimizations # 0x50
-	.quad compile_for_no_optimizations # 0x51
-	.quad compile_for_no_optimizations # 0x52
-	.quad compile_for_no_optimizations # 0x53
-	.quad compile_for_no_optimizations # 0x54
-	.quad compile_for_no_optimizations # 0x55
-	.quad compile_for_no_optimizations # 0x56
-	.quad compile_for_no_optimizations # 0x57
-	.quad compile_for_no_optimizations # 0x58
-	.quad compile_for_no_optimizations # 0x59
-	.quad compile_for_no_optimizations # 0x5A
-	.quad compile_for_no_optimizations # 0x5B
-	.quad compile_for_no_optimizations # 0x5C
-	.quad compile_for_no_optimizations # 0x5D
-	.quad compile_for_no_optimizations # 0x5E
-	.quad compile_for_no_optimizations # 0x5F
-	.quad compile_for_no_optimizations # 0x60
-	.quad compile_for_no_optimizations # 0x61
-	.quad compile_for_no_optimizations # 0x62
-	.quad compile_for_no_optimizations # 0x63
-	.quad compile_for_no_optimizations # 0x64
-	.quad compile_for_no_optimizations # 0x65
-	.quad compile_for_no_optimizations # 0x66
-	.quad compile_for_no_optimizations # 0x67
-	.quad compile_for_no_optimizations # 0x68
-	.quad compile_for_no_optimizations # 0x69
-	.quad compile_for_no_optimizations # 0x6A
-	.quad compile_for_no_optimizations # 0x6B
-	.quad compile_for_no_optimizations # 0x6C
-	.quad compile_for_no_optimizations # 0x6D
-	.quad compile_for_no_optimizations # 0x6E
-	.quad compile_for_no_optimizations # 0x6F
-	.quad compile_for_no_optimizations # 0x70
-	.quad compile_for_no_optimizations # 0x71
-	.quad compile_for_no_optimizations # 0x72
-	.quad compile_for_no_optimizations # 0x73
-	.quad compile_for_no_optimizations # 0x74
-	.quad compile_for_no_optimizations # 0x75
-	.quad compile_for_no_optimizations # 0x76
-	.quad compile_for_no_optimizations # 0x77
-	.quad compile_for_no_optimizations # 0x78
-	.quad compile_for_no_optimizations # 0x79
-	.quad compile_for_no_optimizations # 0x7A
-	.quad compile_for_no_optimizations # 0x7B
-	.quad compile_for_no_optimizations # 0x7C
-	.quad compile_for_no_optimizations # 0x7D
-	.quad compile_for_no_optimizations # 0x7E
-	.quad compile_for_no_optimizations # 0x7F
+	# Restore %r12-15 and %rbx
+	movq -8(%rbp), %r12
+	movq -16(%rbp), %r13
+	movq -24(%rbp), %r14
+	movq -32(%rbp), %r15
+	movq -40(%rbp), %rbx
+	EPILOGUE
