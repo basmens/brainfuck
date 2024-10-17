@@ -581,7 +581,6 @@ compile_for_registers:
 compile_loop_jmp_table:
 	.quad compile_for_no_optimizations # 0x00
 	.quad compile_loop_mult			   # 0x01 Mult or set zero
-	// .quad compile_for_registers		   # 0x02 Normal loop, but can use registers
 	.quad compile_for_registers		   # 0x02 Normal loop, but can use registers
 	.quad compile_for_registers		   # 0x03
 	.quad compile_for_registers		   # 0x04
@@ -596,22 +595,22 @@ compile_loop_jmp_table:
 	.quad compile_for_registers		   # 0x0D
 	.quad compile_for_registers		   # 0x0E
 	.quad compile_for_registers		   # 0x0F
-	.quad compile_for_no_optimizations # 0x10
-	.quad compile_for_no_optimizations # 0x11
-	.quad compile_for_no_optimizations # 0x12
-	.quad compile_for_no_optimizations # 0x13
-	.quad compile_for_no_optimizations # 0x14
-	.quad compile_for_no_optimizations # 0x15
-	.quad compile_for_no_optimizations # 0x16
-	.quad compile_for_no_optimizations # 0x17
-	.quad compile_for_no_optimizations # 0x18
-	.quad compile_for_no_optimizations # 0x19
-	.quad compile_for_no_optimizations # 0x1A
-	.quad compile_for_no_optimizations # 0x1B
-	.quad compile_for_no_optimizations # 0x1C
-	.quad compile_for_no_optimizations # 0x1D
-	.quad compile_for_no_optimizations # 0x1E
-	.quad compile_for_no_optimizations # 0x1F
+	.quad compile_for_registers		   # 0x10
+	.quad compile_for_registers		   # 0x11
+	.quad compile_for_registers		   # 0x12
+	.quad compile_for_registers		   # 0x13
+	.quad compile_for_registers		   # 0x14
+	.quad compile_for_registers		   # 0x15
+	.quad compile_for_registers		   # 0x16
+	.quad compile_for_registers		   # 0x17
+	.quad compile_for_registers		   # 0x18
+	.quad compile_for_registers		   # 0x19
+	.quad compile_for_registers		   # 0x1A
+	.quad compile_for_registers		   # 0x1B
+	.quad compile_for_registers		   # 0x1C
+	.quad compile_for_registers		   # 0x1D
+	.quad compile_for_registers		   # 0x1E
+	.quad compile_for_registers		   # 0x1F
 	.quad compile_loop_scan			   # 0x20 Scan loop
 	.quad compile_for_no_optimizations # 0x21
 	.quad compile_for_no_optimizations # 0x22
@@ -786,7 +785,7 @@ byte_code_out_reg:
 	movl %r8d, (%r13)
 	movl $output_buffer, 3(%r13)
 	movl $0x00C5FF49, 7(%r13)
-	addq $INSTRUCTION_SIZE_OUT_ADDR, %r13
+	addq $INSTRUCTION_SIZE_OUT_REG, %r13
 .endm
 
 .equ INSTRUCTION_SIZE_IF_ADDR, 11
