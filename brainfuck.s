@@ -437,6 +437,8 @@ compile_loop_mult:
 	subq %rax, %r10 # Get the amount of instructions written
 	cmpq $8, %r10 # If only one instruction is written, it is a set zero instruction
 	je compile_loop_set_zero
+	cmpq $16, %r10 # If only two instructions are written, it is a copy instruction
+	je compile_loop_copy
 	addq %rax, %r10 # Restore the old write pointer
 
 	/*
@@ -501,6 +503,37 @@ compile_loop_set_zero:
 	jmp read_loop
 
 
+################################## Copy ##################################
+compile_loop_copy:
+	# Get instructions
+	movq (%rax), %r8 # Get first instruction
+	movq 8(%rax), %rcx # Get second instruction
+
+	# If %rcx is the source add instruction, then swap them
+	cmpl $0, 10(%rax)
+	jne 1f
+	xchgq %r8, %rcx
+	1:
+
+	# Write load loop count instruction
+	shrq $8, %r8 # Get source add count
+	write_intermediate_instruction_amount_offset $OP_CODE_LOAD_LOOP_COUNT, %r8b, %edx
+	orq $FLAG_USE_AL, -2(%r12) # Use al instead of %r14b
+
+	# Write mult add instruction
+	movb %ch, %al # Get multiplication factor
+	shrq $16, %rcx # Get memory pointer offset
+	addl %edx, %ecx # Add memory pointer offset of instruction
+	write_intermediate_instruction_amount_offset $OP_CODE_MULT_ADD, %al, %ecx
+	orq $FLAG_USE_AL, -2(%r12) # Use al instead of %r14b
+
+	# Write set zero instruction
+	write_intermediate_instruction_amount_offset $OP_CODE_SET, $0, %edx
+	
+ 	# Increment maximum executable memory size, load loop count scan and pow2_addr are the biggest variant of the instructions
+	addq $INSTRUCTION_SIZE_LOAD_LOOP_COUNT_SCAN + INSTRUCTION_SIZE_MULT_ADD_POW2_ADDR + INSTRUCTION_SIZE_SET_ADDR, %r13
+	orl $LOOP_CONTAINS_SET | LOOP_CONTAINS_MULT, -16(%rbp) # Loop contains a set zero and a multiplication
+	jmp read_loop
 
 
 ################################## Scan ##################################
@@ -920,7 +953,17 @@ byte_code_add_reg:
 	addq $INSTRUCTION_SIZE_ADD_REG, %r13
 .endm
 
+.equ INSTRUCTION_SIZE_ADD_AL_ADDR, SIZE_ADD_AL_TO_ADDR
+.macro write_instruction_add_al_addr address
+	write_add_al_to_addr \address, 0
+	addq $INSTRUCTION_SIZE_ADD_AL_ADDR, %r13
+.endm
 
+.equ INSTRUCTION_SIZE_ADD_AL_REG, SIZE_ADD_AL_TO_REG
+.macro write_instruction_add_al_reg reg
+	write_add_al_to_reg \reg, 0
+	addq $INSTRUCTION_SIZE_ADD_AL_REG, %r13
+.endm
 
 .equ SIZE_ADD_AL_TO_ADDR, 8
 .align 8
@@ -1039,26 +1082,55 @@ byte_code_load_pow2:
 	addq $INSTRUCTION_SIZE_LOAD_POW2, %r13
 .endm
 
-.equ INSTRUCTION_SIZE_LOAD_LOOP_COUNT_SCAN, 29
+.equ INSTRUCTION_SIZE_LOAD_POW2_AL, 23
+.align 8
+byte_code_load_pow2_al:
+	.byte 0xA8, 0x00									#0  testb $test_mask, %al
+	.byte 0x74, 0x10									#2  jz 1f
+	.byte 0x48, 0xC7, 0xC0, 0x3C, 0x00, 0x00, 0x00		#4  movq $60, %rax (Exit)
+	.byte 0x48, 0xC7, 0xC7, 0x0A, 0x00, 0x00, 0x00		#11 movq $10, %rdi
+	.byte 0x0F, 0x05									#18 syscall
+	.byte 0xC0, 0xE8, 0x00								#20 1: shrb $shift_count, %al
+	.byte 0x00											# Padding
+.macro write_instruction_load_pow2_al add_count
+	movq $3, %rcx # Quad count
+	movq %r13, %rdi # Destination
+	movq $byte_code_load_pow2_al, %rsi # Source
+	rep movsq
+
+	decb \add_count # Get test mask
+	movb \add_count, 1(%r13)
+	incb \add_count # Restore
+	movzb \add_count, %r8w
+	bsfw %r8w, %r8w # Get shift count
+	movb %r8b, 22(%r13)
+	addq $INSTRUCTION_SIZE_LOAD_POW2_AL, %r13
+.endm
+
+.equ INSTRUCTION_SIZE_LOAD_LOOP_COUNT_SCAN, 31
 .align 8
 byte_code_load_loop_count_scan:
 	.byte 0x44, 0x88, 0xF0						#0  movb %r14b, %al
-	.byte 0xB1, 0x00							#3  movb $add_count, %cl
-	.byte 0x45, 0x30, 0xF6						#5  xorb %r14b, %r14b
-	.byte 0xB4, 0x00							#8  1: movb $0, %ah
-	.byte 0xF6, 0xF1							#10 divb %cl
-	.byte 0x41, 0x00, 0xC6						#12 addb %al, %r14b
-	.byte 0x80, 0xFC, 0x00						#15 cmpb $0, %ah
-	.byte 0x74, 0x09							#18 je 1f
-	.byte 0x88, 0xE0							#20 movb %ah, %al
-	.byte 0x28, 0xC8							#22 subb %cl, %al
-	.byte 0x41, 0xFE, 0xC6						#24 incb %r14b
-	.byte 0xEB, 0xEB							#27 jmp 1b 1:
-	.byte 0x00, 0x00, 0x00						# Padding
-.macro write_instruction_load_loop_count_scan add_count
+	.byte 0x51									#3  pushq %rcx
+	.byte 0xB1, 0x00							#4  movb $add_count, %cl
+	.byte 0x45, 0x30, 0xF6						#6  xorb %r14b, %r14b
+	.byte 0xB4, 0x00							#9  1: movb $0, %ah
+	.byte 0xF6, 0xF1							#11 divb %cl
+	.byte 0x41, 0x00, 0xC6						#13 addb %al, %r14b
+	.byte 0x80, 0xFC, 0x00						#16 cmpb $0, %ah
+	.byte 0x74, 0x09							#19 je 1f
+	.byte 0x88, 0xE0							#21 movb %ah, %al
+	.byte 0x28, 0xC8							#23 subb %cl, %al
+	.byte 0x41, 0xFE, 0xC6						#25 incb %r14b
+	.byte 0xEB, 0xEB							#28 jmp 1b 1:
+	.byte 0x59									#30 popq %rcx
+	.byte 0x44, 0x88, 0xF0						#31 movb %r14b, %al # One of the two will be unused, depending on the use_al flag
+	.byte 0x00									# Padding
+.macro write_instruction_load_loop_count_scan add_count, read_offset
 	movq $4, %rcx # Quad count
 	movq %r13, %rdi # Destination
 	movq $byte_code_load_loop_count_scan, %rsi # Source
+	addl \read_offset, %esi # For the use_al flag
 	rep movsq
 	movb \add_count, 4(%r13)
 	addq $INSTRUCTION_SIZE_LOAD_LOOP_COUNT_SCAN, %r13
@@ -1070,7 +1142,7 @@ byte_code_load_loop_count_scan:
 	movl $0x24B48A45, (%r13) # movb address(%r12), %r14b
 	movl \address, 4(%r13)
 	addq $8, %r13
-	write_load_loop_count \add_count
+	write_load_loop_count \add_count, "", $0, "movl $0x00DEF641, (%r13); addq $3, %r13"
 .endm
 
 byte_code_load_loop_count_reg:
@@ -1088,18 +1160,43 @@ byte_code_load_loop_count_reg:
 	movl byte_code_load_loop_count_reg(%r8d), %r8d
 	movl %r8d, (%r13)
 	addq $3, %r13
-	write_load_loop_count \add_count
+	write_load_loop_count \add_count, "", $0, "movl $0x00DEF641, (%r13); addq $3, %r13"
 .endm
 
-.macro write_load_loop_count add_count
+.macro write_load_loop_count_al_addr add_count, address
+	movl $0x24848A41, (%r13) # movb address(%r12), %al
+	movl \address, 4(%r13)
+	addq $8, %r13
+	write_load_loop_count \add_count, "_al", $3, "movw $0xD8F6, (%r13); addq $2, %r13"
+.endm
+
+byte_code_load_loop_count_al_reg:
+	.long 0x00C88840 # movb %reg, %al
+	.long 0x00D08840
+	.long 0x00F88840
+	.long 0x00F08840
+	.long 0x00C08844
+	.long 0x00C88844
+	.long 0x00D08844
+	.long 0x00D88844
+.macro write_load_loop_count_al_reg add_count, reg
+	movl \reg, %r8d
+	shll $2, %r8d
+	movl byte_code_load_loop_count_al_reg(%r8d), %r8d
+	movl %r8d, (%r13)
+	addq $3, %r13
+	write_load_loop_count \add_count, "_al", $3, "movw $0xD8F6, (%r13); addq $2, %r13"
+.endm
+
+.macro write_load_loop_count add_count, pow2_prefix, write_scan_offset, neg_instruction
 	# Normalize everything to positive cases
 	cmpb $0, \add_count # Check if add count is negative
 	jg 1f
 	negb \add_count # Negate add count
 	jmp 2f
 1:
-	movl $0x00DEF641, (%r13) # negb %r14b
-	addq $3, %r13
+	\neg_instruction # negb %r14b / negb %al
+	
 2:
 
 	# Check case 1
@@ -1111,42 +1208,58 @@ byte_code_load_loop_count_reg:
 	popcnt %r8, %r8
 	cmpb $1, %r8b
 	jne 1f
-	write_instruction_load_pow2 \add_count
+	write_instruction_load_pow2\pow2_prefix \add_count
 	jmp 3f
 1:
 
 	# Not a simplified scan, so just search with a loop
-	write_instruction_load_loop_count_scan \add_count
+	write_instruction_load_loop_count_scan \add_count, \write_scan_offset
 3:
 .endm
 
 
 ################################## Mult add ##################################
-.equ INSTRUCTION_SIZE_MULT_ADD_POW2_ADDR, SIZE_MULT_ADD_POW2 + SIZE_ADD_AL_TO_ADDR
+.equ INSTRUCTION_SIZE_MULT_ADD_POW2_ADDR, 3 + SIZE_MULT_ADD_POW2_AL + SIZE_ADD_AL_TO_ADDR
+byte_code_mult_add_pow2:
+	.byte 0x44, 0x88, 0xF0									#0 movb %r14b, %al
 .macro write_instruction_mult_add_pow2_addr amount, address
-	write_mult_add_pow2 \amount
-	write_add_al_to_addr \address, SIZE_MULT_ADD_POW2
+	movl $0x00F08844, (%r13)
+	write_mult_add_pow2_al \amount, 3
+	write_add_al_to_addr \address, 3 + SIZE_MULT_ADD_POW2_AL
 	addq $INSTRUCTION_SIZE_MULT_ADD_POW2_ADDR, %r13
 .endm
 
-.equ INSTRUCTION_SIZE_MULT_ADD_POW2_REG, SIZE_MULT_ADD_POW2 + SIZE_ADD_AL_TO_REG
+.equ INSTRUCTION_SIZE_MULT_ADD_POW2_REG, 3 + SIZE_MULT_ADD_POW2_AL + SIZE_ADD_AL_TO_REG
 .macro write_instruction_mult_add_pow2_reg amount, reg
-	write_mult_add_pow2 \amount
-	write_add_al_to_reg \reg, SIZE_MULT_ADD_POW2
+	movl $0x00F08844, (%r13)
+	write_mult_add_pow2_al \amount, 3
+	write_add_al_to_reg \reg, 3 + SIZE_MULT_ADD_POW2_AL
 	addq $INSTRUCTION_SIZE_MULT_ADD_POW2_REG, %r13
 .endm
 
-.equ SIZE_MULT_ADD_POW2, 6
+.equ INSTRUCTION_SIZE_MULT_ADD_POW2_AL_ADDR, SIZE_MULT_ADD_POW2_AL + SIZE_ADD_AL_TO_ADDR
+.macro write_instruction_mult_add_pow2_al_addr amount, address
+	write_mult_add_pow2_al \amount, 0
+	write_add_al_to_addr \address, SIZE_MULT_ADD_POW2_AL
+	addq $INSTRUCTION_SIZE_MULT_ADD_POW2_AL_ADDR, %r13
+.endm
+
+.equ INSTRUCTION_SIZE_MULT_ADD_POW2_AL_REG, SIZE_MULT_ADD_POW2_AL + SIZE_ADD_AL_TO_REG
+.macro write_instruction_mult_add_pow2_al_reg amount, reg
+	write_mult_add_pow2_al \amount, 0
+	write_add_al_to_reg \reg, SIZE_MULT_ADD_POW2_AL
+	addq $INSTRUCTION_SIZE_MULT_ADD_POW2_AL_REG, %r13
+.endm
+
+.equ SIZE_MULT_ADD_POW2_AL, 3
 .align 8
-byte_code_mult_add_pow2:
-	.byte 0x44, 0x88, 0xF0									#0 movb %r14b, %al
-	.byte 0xC0, 0xE0, 0x00									#3 shlb $shift_count, %al
-.macro write_mult_add_pow2 amount
+byte_code_mult_add_pow2_al:
+	.byte 0xC0, 0xE0, 0x00								#0 shlb $shift_count, %al
+.macro write_mult_add_pow2_al amount, write_offset
 	movzb \amount, %r8w
 	bsfw %r8w, %r8w # Get shift count
-	movl $0xC0F08844, (%r13)
-	movb $0xE0, 4(%r13)
-	movb %r8b, 5(%r13)
+	movw $0xE0C0, \write_offset(%r13)
+	movb %r8b, \write_offset + 2(%r13)
 	# Incrementing the write pointer is left to the user of this macro
 .endm
 
@@ -1176,15 +1289,49 @@ byte_code_mult_add:
 	# Incrementing the write pointer is left to the user of this macro
 .endm
 
+.equ INSTRUCTION_SIZE_MULT_ADD_AL_ADDR, SIZE_MULT_ADD_AL + SIZE_ADD_AL_TO_ADDR
+.macro write_instruction_mult_add_al_addr amount, address
+	write_mult_add_al \amount
+	write_add_al_to_addr \address, SIZE_MULT_ADD_AL
+	addq $INSTRUCTION_SIZE_MULT_ADD_AL_ADDR, %r13
+.endm
+
+.equ INSTRUCTION_SIZE_MULT_ADD_AL_REG, SIZE_MULT_ADD_AL + SIZE_ADD_AL_TO_REG
+.macro write_instruction_mult_add_al_reg amount, reg
+	write_mult_add_al \amount
+	write_add_al_to_reg \reg, SIZE_MULT_ADD_AL
+	addq $INSTRUCTION_SIZE_MULT_ADD_AL_REG, %r13
+.endm
+
+.equ SIZE_MULT_ADD_AL, 6
+.align 8
+byte_code_mult_add_al:
+	.byte 0x41, 0xB6, 0x00									#0 movb $amount, %r14b
+	.byte 0x41, 0xF6, 0xE6									#3 mulb %r14b
+.macro write_mult_add_al amount
+	movl $0x4100B641, (%r13)
+	movb \amount, 2(%r13)
+	movw $0xE6F6, 4(%r13)
+	# Incrementing the write pointer is left to the user of this macro
+.endm
+
 .macro write_mult_add_addr amount, address
-	write_mult_add_addr_or_reg \amount, addr, \address, -7
+	write_mult_add_addr_or_reg \amount, addr, \address, -7, ""
 .endm
 
 .macro write_mult_add_reg amount, reg
-	write_mult_add_addr_or_reg \amount, reg, \reg, -2
+	write_mult_add_addr_or_reg \amount, reg, \reg, -2, ""
 .endm
 
-.macro write_mult_add_addr_or_reg amount, addr_or_reg, value, add_to_sub_offset
+.macro write_mult_add_al_addr amount, address
+	write_mult_add_addr_or_reg \amount, addr, \address, -7, "al_"
+.endm
+
+.macro write_mult_add_al_reg amount, reg
+	write_mult_add_addr_or_reg \amount, reg, \reg, -2, "al_"
+.endm
+
+.macro write_mult_add_addr_or_reg amount, addr_or_reg, value, add_to_sub_offset, al_prefix
 	# Get absolute value of amount in %r8
 	movb \amount, %r8b
 	cmpb $0, %r8b
@@ -1195,7 +1342,7 @@ byte_code_mult_add:
 	# Check if amount is 1
 	cmpb $1, %r8b
 	jne 1f
-	write_instruction_add_\addr_or_reg \value
+	write_instruction_add_\al_prefix\addr_or_reg \value
 	jmp 2f
 1:
 
@@ -1204,12 +1351,12 @@ byte_code_mult_add:
 	popcnt %r8, %r9
 	cmpb $1, %r9b
 	jne 1f
-	write_instruction_mult_add_pow2_\addr_or_reg %r8b \value
+	write_instruction_mult_add_pow2_\al_prefix\addr_or_reg %r8b \value
 	jmp 2f
 1:
 
 	# Not a simplified multiplication, so use a mult insruction
-	write_instruction_mult_add_\addr_or_reg \amount \value
+	write_instruction_mult_add_\al_prefix\addr_or_reg \amount \value
 	jmp 3f
 
 2:
@@ -1529,16 +1676,6 @@ compile_second_pass_loop:
 	movzb %dl, %rax
 	shlq $3, %rax
 	jmp *sp_compile_jmp_table(%rax)
-	// movq $-1, %rax
-	// write_instruction_set_reg $0, $0
-	// write_instruction_set_reg $0, $1
-	// write_instruction_set_reg $0, $2
-	// write_instruction_set_reg $0, $3
-	// write_instruction_set_reg $0, $4
-	// write_instruction_set_reg $0, $5
-	// write_instruction_set_reg $0, $6
-	// write_instruction_set_reg $0, $7
-	// jmp execute
 
 
 /*
@@ -1560,6 +1697,7 @@ compile_second_pass_loop:
 
 .equ FLAG_MAKE_REGISTER_LOOP, 0x1 # Only for if and for instructions
 .equ FLAG_USE_REGISTER, 0x2
+.equ FLAG_USE_AL, 0x4 # For multiplication, use %al instead of %r14b
 
 .equ MAX_REGISTER_COUNT, 8 # We got cl, dl, dil, sil, r8b, r9b, r10b and r11b, so thats 8 registers
 
@@ -1777,9 +1915,23 @@ sp_compile_load_loop_count:
 	shrq $32, %rcx
 	testw $FLAG_USE_REGISTER, %cx # Test if we need to use a register
 	jz 100f
+
+	# Check use_al flag
+	testw $FLAG_USE_AL, %cx
+	jz 200f
+	write_load_loop_count_al_reg %al, %edx
+	jmp compile_second_pass_loop
+	200:
 	write_load_loop_count_reg %al, %edx
 	jmp compile_second_pass_loop
+
 	100:
+	# Check use_al flag
+	testw $FLAG_USE_AL, %cx
+	jz 200f
+	write_load_loop_count_al_addr %al, %edx
+	jmp compile_second_pass_loop
+	200:
 	write_load_loop_count_addr %al, %edx
 	jmp compile_second_pass_loop
 
@@ -1791,9 +1943,23 @@ sp_compile_mult_add:
 	shrq $32, %rcx
 	testw $FLAG_USE_REGISTER, %cx # Test if we need to use a register
 	jz 100f
+
+	# Check use_al flag
+	testw $FLAG_USE_AL, %cx
+	jz 200f
+	write_mult_add_al_reg %al, %edx
+	jmp compile_second_pass_loop
+	200:
 	write_mult_add_reg %al, %edx
 	jmp compile_second_pass_loop
+
 	100:
+	# Check use_al flag
+	testw $FLAG_USE_AL, %cx
+	jz 200f
+	write_mult_add_al_addr %al, %edx
+	jmp compile_second_pass_loop
+	200:
 	write_mult_add_addr %al, %edx
 	jmp compile_second_pass_loop
 
