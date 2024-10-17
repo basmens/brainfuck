@@ -611,7 +611,7 @@ compile_loop_jmp_table:
 	.quad compile_for_registers		   # 0x1D
 	.quad compile_for_registers		   # 0x1E
 	.quad compile_for_registers		   # 0x1F
-	.quad compile_loop_scan			   # 0x20 Scan loop
+	.quad compile_for_no_optimizations # 0x20 Normal loop, but can use registers
 	.quad compile_for_no_optimizations # 0x21
 	.quad compile_for_no_optimizations # 0x22
 	.quad compile_for_no_optimizations # 0x23
@@ -643,7 +643,7 @@ compile_loop_jmp_table:
 	.quad compile_for_no_optimizations # 0x3D
 	.quad compile_for_no_optimizations # 0x3E
 	.quad compile_for_no_optimizations # 0x3F
-	.quad compile_for_no_optimizations # 0x40
+	.quad compile_loop_scan			   # 0x40 Scan loop
 	.quad compile_for_no_optimizations # 0x41
 	.quad compile_for_no_optimizations # 0x42
 	.quad compile_for_no_optimizations # 0x43
