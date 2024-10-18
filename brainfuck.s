@@ -71,7 +71,6 @@ decomile_intermediate_src:
 intermediate_src: .skip 35536, 0 # Can use the output buffer too since it is independent from the first pass of the compilation and does not require initialization
 output_buffer: .skip 30000, 0
 runtime_memory: .skip 30000, 0
-read_null_jump_location: .quad compile_final_for
 
 .text
 
@@ -142,7 +141,7 @@ brainfuck:
 	push %r15 # -32 Becomes last read instruction
 	push %rbx # -40 Becomes instruction repetition counter
 
-	# Each bracket frame contains 24 bytes. The first quad contain the previous %rbp. The second quad is used to store 
+	# Each bracket frame contains 24 bytes. The first quad contain the previous %rbp. The second quad are used to store 
 	# the address of the if statement. The next 4 bytes are used to keep track of the total memory pointer movement. 
 	# The last 4 bytes are used to keep track of some loop optimization possibilities.
 	# Push first bracket frame
@@ -167,7 +166,6 @@ brainfuck:
 	# Loop through brainfuck source
 	decq %r14 # Decrement brainfuck source by one to increment to 0 in loop
 	movb $0, %al
-	jmp compile_if # Enter loop by writing the wrapping if statement, used to apply loop optimizations globally as well
 read_loop_end_condition:
 	cmpb $-43, %al # This check can be skipped when reading most characters. Only if a non-brainfuck char is read
 	je compile_char_null # do we have to do this check
@@ -195,14 +193,7 @@ compile_char_simple out compile_out 1
 
 compile_char_null:
 	decq %r14 # Decrement src ptr to guarantee that the next loop cicle will also read a null termination character
-	movq %r15, %rax # Copy last read instruction
-	movq %rbx, %rdx # Copy instruction repetition counter into %rdx for the intructions to use
-	movq read_null_jump_location, %r15 # Set last read instruction to compile_for for the first time, and compile_second_pass the second time
-	movq $compile_second_pass, read_null_jump_location
-	movq $1, %rbx # Set instruction repetition counter to initial value
-	cmpq $0, %rdx # If instruction repetition counter is 0, skip
-	je read_loop
-	jmp *%rax # Jump to previous instruction
+	compile_char_simple return compile_second_pass 1
 
 compile_char_left_repetition:
 	cmpq $compile_right, %r15 # Check if last instruction was a right
@@ -356,8 +347,6 @@ compile_if:
 	pushq $0
 	jmp read_loop
 
-compile_final_for:
-	movl $0, -12(%rbp) # Reset total memory movement
 compile_for:
 	movq -16(%rbp), %rax # Get total memory movement and flags
 	testl $LOOP_NO_OPTIMIZATIONS, %eax # Check if no optimizations are possible
@@ -579,11 +568,11 @@ compile_for_registers:
 	
 
 .equ LOOP_CONTAINS_PLUS, 0x1
-.equ LOOP_CONTAINS_SET, 0x2
-.equ LOOP_CONTAINS_MULT, 0x4
-.equ LOOP_CONTAINS_OUT, 0x8
-.equ LOOP_CONTAINS_LOOP, 0x10
-.equ LOOP_HAS_TOTAL_RIGHT, 0x20
+.equ LOOP_CONTAINS_OUT, 0x10
+.equ LOOP_CONTAINS_SET, 0x4
+.equ LOOP_CONTAINS_MULT, 0x8
+.equ LOOP_CONTAINS_LOOP, 0x20
+.equ LOOP_HAS_TOTAL_RIGHT, 0x40
 
 # No optimizations possible
 .equ LOOP_NO_OPTIMIZATIONS, 0x10000000
@@ -607,23 +596,23 @@ compile_loop_jmp_table:
 	.quad compile_for_registers		   # 0x0D
 	.quad compile_for_registers		   # 0x0E
 	.quad compile_for_registers		   # 0x0F
-	.quad compile_for_no_optimizations # 0x10 Normal nested loop, but can use registers
-	.quad compile_for_no_optimizations # 0x11
-	.quad compile_for_no_optimizations # 0x12
-	.quad compile_for_no_optimizations # 0x13
-	.quad compile_for_no_optimizations # 0x14
-	.quad compile_for_no_optimizations # 0x15
-	.quad compile_for_no_optimizations # 0x16
-	.quad compile_for_no_optimizations # 0x17
-	.quad compile_for_no_optimizations # 0x18
-	.quad compile_for_no_optimizations # 0x19
-	.quad compile_for_no_optimizations # 0x1A
-	.quad compile_for_no_optimizations # 0x1B
-	.quad compile_for_no_optimizations # 0x1C
-	.quad compile_for_no_optimizations # 0x1D
-	.quad compile_for_no_optimizations # 0x1E
-	.quad compile_for_no_optimizations # 0x1F
-	.quad compile_loop_scan			   # 0x20 Scan loop
+	.quad compile_for_registers		   # 0x10
+	.quad compile_for_registers		   # 0x11
+	.quad compile_for_registers		   # 0x12
+	.quad compile_for_registers		   # 0x13
+	.quad compile_for_registers		   # 0x14
+	.quad compile_for_registers		   # 0x15
+	.quad compile_for_registers		   # 0x16
+	.quad compile_for_registers		   # 0x17
+	.quad compile_for_registers		   # 0x18
+	.quad compile_for_registers		   # 0x19
+	.quad compile_for_registers		   # 0x1A
+	.quad compile_for_registers		   # 0x1B
+	.quad compile_for_registers		   # 0x1C
+	.quad compile_for_registers		   # 0x1D
+	.quad compile_for_registers		   # 0x1E
+	.quad compile_for_registers		   # 0x1F
+	.quad compile_for_no_optimizations # 0x20 Normal loop, but can use registers
 	.quad compile_for_no_optimizations # 0x21
 	.quad compile_for_no_optimizations # 0x22
 	.quad compile_for_no_optimizations # 0x23
@@ -655,7 +644,7 @@ compile_loop_jmp_table:
 	.quad compile_for_no_optimizations # 0x3D
 	.quad compile_for_no_optimizations # 0x3E
 	.quad compile_for_no_optimizations # 0x3F
-	.quad compile_for_no_optimizations # 0x40
+	.quad compile_loop_scan			   # 0x40 Scan loop
 	.quad compile_for_no_optimizations # 0x41
 	.quad compile_for_no_optimizations # 0x42
 	.quad compile_for_no_optimizations # 0x43
@@ -1545,9 +1534,7 @@ compile_second_pass:
 	# The next instruction is passed through %rdx
 
 	# Write exit
-	subq $8, %r12 # Overwrite the last for with the exit
 	write_intermediate_instruction $OP_CODE_EXIT
-	orw $FLAG_MAKE_REGISTER_LOOP | FLAG_USE_REGISTER, -2(%r12) # Set flags so that the register optimization works on the globally
 
 	# Pop final bracket frame
 	movq %rbp, %rsp
@@ -1564,6 +1551,10 @@ compile_second_pass:
     syscall
 	movq %rax, %r13 # Save executable source block
 	pushq %r13 # -48 Save executable source block
+
+	# Write 'xor %r13, %r13' into executable memory as first instruction
+	movl $0x00ED314D, (%r13)
+	addq $3, %r13 # Increment executable source block
 
 	# Loop through intermediate source
 	movq $intermediate_src - 8, %r12 # Init %12 to the start of intermediate source
@@ -1849,14 +1840,8 @@ sp_compile_mult_add:
 execute:
 	# For the run part, %r12 will contain the memory pointer and %r13 will contain the output length counter.
 	# Call the executable source block
-
-	# Skip first if instruction and write prologue into program
-	movq -48(%rbp), %r13 # Get start of executable source block
-	addq $INSTRUCTION_SIZE_IF_ADDR - 3, %r13 # Increment start of program counter to skip the first if instruction, but leave room for the prologue
-	movl $0xED314D00, -1(%r13) # Write 'xor %r13, %r13' into executable memory as first instruction
-
-	# Run
 	movq $runtime_memory, %r12
+	movq -48(%rbp), %r13 # Get start of executable source block
 	call *%r13
 
 	# Print output
