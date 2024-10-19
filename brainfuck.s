@@ -142,8 +142,8 @@ brainfuck:
 	push %rbx # -40 Becomes instruction repetition counter
 
 	# Each bracket frame contains 24 bytes. The first quad contain the previous %rbp. The second quad are used to store 
-	# the address of the if statement. The next 4 bytes are used to keep track of the total memory pointer movement. 
-	# The last 4 bytes are used to keep track of some loop optimization possibilities.
+	# the address of the if statement. The next 4 bytes are used to keep track of memory pointer offset. The last 4 bytes are 
+	# used to keep track of some loop optimization possibilities.
 	# Push first bracket frame
 	pushq %rbp
 	movq %rsp, %rbp
@@ -321,43 +321,37 @@ compile_char_jmp_table:
 	movl \offset, -6(%r12)
 .endm
 
-.macro compile_pop_mem_movement
-	movl -12(%rbp), %r8d # Get memory pointer offset from bracket frame
-	testl %r8d, %r8d # If memory pointer offset is 0, skip
-	jz 1f
-
-	# Memory pointer is not set to zero. That will be done by compile_for if it
-	# has been found that the loop cannot be optimized. Same goes for incrementing
-	# the maximum size of the executable memory.
-	write_intermediate_instruction_offset $OP_CODE_RIGHT, %r8d # Write instruction
-1:
-.endm
-
 compile_if:
-	compile_pop_mem_movement
-
 	# Write instruction
-	write_intermediate_instruction $OP_CODE_IF
+	movl -12(%rbp), %eax # Get offset from memory pointer
+	write_intermediate_instruction_offset $OP_CODE_IF, %eax
 	addq $MAX_INSTRUCTION_SIZE_IF, %r13 # Increment maximum executable memory size
 
 	# Write new bracket frame
+	shlq $32, %rax # Move offset to the upper 32 bits
 	pushq %rbp
 	movq %rsp, %rbp
 	pushq %r12 # Push new empty bracket frame
-	pushq $0
+	pushq %rax
 	jmp read_loop
 
 compile_for:
-	movq -16(%rbp), %rax # Get total memory movement and flags
+	# Get flags and total memory pointer movement in this bracket frame
+	movq -16(%rbp), %rax # Get memory pointer offset and flags
+	movq %rax, %rdx # Extract memory pointer offset
+	shrq $32, %rdx
+	movq (%rbp), %r8 # Get parent bracket frame
+	subl -12(%r8), %edx # Subtract parent memory pointer offset
+
+	# Test if no optimizations are possible
 	testl $LOOP_NO_OPTIMIZATIONS, %eax # Check if no optimizations are possible
 	jnz compile_for_no_optimizations
 
 	# Optimizations are possible, jump to appropriate one
-	movq %rax, %rdx # Extract total memory movement
-	shrq $32, %rdx
-	cmpl $0, %edx # Check if it is zero
-	je 1f
+	testl %edx, %edx # Check if it is zero
+	jz 1f
 	orl $LOOP_HAS_TOTAL_RIGHT, %eax # If so, set flag
+	# Writing the move instruction to pop the net movement is left to the specific loop compilation, amount passed in %r8d
 1:
 	shll $3, %eax # Multiply flags by 8 and use as an index into the jump table
 	jmp *compile_loop_jmp_table(%eax)
@@ -392,14 +386,6 @@ compile_out:
 ##############################################################################################################################################
 # Compile loops
 ##############################################################################################################################################
-.macro move_before_if_instruction src_pointer
-	subq $8, \src_pointer # Move pointer to the if instruction
-	cmpb $OP_CODE_RIGHT, -8(\src_pointer) # Check if the previous instruction is a right instruction
-	jne 1f
-	subq $8, \src_pointer # If so, move to it aswell
-1:
-.endm
-
 .macro pop_bracket_frame
 	movl -16(%rbp), %r8d # Get flags
 	movq %rbp, %rsp # Pop bracket frame
@@ -410,14 +396,17 @@ compile_out:
 
 ################################## None ##################################
 compile_for_no_optimizations:
-	compile_pop_mem_movement
-
-	write_intermediate_instruction $OP_CODE_FOR
+	write_intermediate_instruction_offset $OP_CODE_RIGHT, %edx # Pop the net movement of this bracket frame
 	pop_bracket_frame
-	movl $0, -12(%rbp) # Reset memory pointer to match the movement before the if
-	addq $MAX_INSTRUCTION_SIZE_FOR + 2 * MAX_INSTRUCTION_SIZE_RIGHT, %r13 # Increment maximum executable memory size
+
+	movl -12(%rbp), %eax # Get offset from memory pointer
+	write_intermediate_instruction_offset $OP_CODE_FOR, %eax
+	addq $MAX_INSTRUCTION_SIZE_FOR + MAX_INSTRUCTION_SIZE_RIGHT, %r13 # Increment maximum executable memory size
 
 	orl $LOOP_CONTAINS_LOOP, -16(%rbp) # Loop contains a inner loop
+	testl %edx, %edx # Check if net movement is zero
+	jz read_loop # If so, continue reading
+	orl $LOOP_CONTAINS_SCAN, -16(%rbp) # Loop contains a scan instruction
 	jmp read_loop
 
 
@@ -426,8 +415,7 @@ compile_loop_mult:
 	# Move back the write pointer
 	movq -8(%rbp), %rax # Get address of the first instruction after if, and keep a copy of it in %rax
 	movq %r12, %r10 # Preserve a copy of the current write pointer in %r10
-	movq %rax, %r12 # Then move it back to the if instruction or the move instruction before the if if present
-	move_before_if_instruction %r12
+	movq %rax, %r12 # Then move it back to the if instruction
 
 	# Pop current bracket frame and get memory pointer offset of parent bracket frame into %rdx
 	pop_bracket_frame
@@ -444,17 +432,16 @@ compile_loop_mult:
 	/*
 		We know every instuction is 8 bytes long. So if the if instruction gets replaced by the load loop count instruction, then every
 		following instruction will replace itself, or a previously read instruction, but never one that was yet to be read. So reading and
-		writing in one loop is safe. %rax has the address of the first instruction after the if instruction, it be the read pointer through 
-		the loop. %rdx has the memory pointer offset of the parent bracket frame. %r10 has the old write pointer to use as end condition 
-		for the loop. %r11 will hold the location where the load loop count instruction is to be inserted. Finally, %rcx will keep track 
-		of the source add count.
+		writing in one loop is safe. %rax has the address of the first instruction after the if instruction, and it will be the read 
+		pointer through the loop. %rdx will hold the parent memory pointer offset to compare for the source add count.
+		%r10 has the old write pointer to use as end condition for the loop. Then, %rcx will keep track of the source add count.
+		Finally, %r11 had the address of the if instruction to be used later for inserting the load loop count instruction.
 	*/
 
 	# Loop through all the plus instructions
-	movb $0, %cl # Set source add count to 0
+	xorq %rcx, %rcx # Set source add count to 0
 	subq $8, %rax # Decrement %rax to be incremented on entry in the loop
-	movq %r12, %r11 # Set %r11 to the location where the load loop count instruction is to be inserted
-	addq $8, %r12 # Increment %r12 to make space for the load loop count instruction
+	movq %rax, %r11 # Get address of if instruction into %r11
 compile_mult_loop:
 	# Increment and end condition
 	addq $8, %rax
@@ -463,11 +450,10 @@ compile_mult_loop:
 
 	# Read next instruction
 	movl 2(%rax), %edi # Get the memory pointer offset of the instruction
-	testl %edi, %edi # Check if it is a source add instruction
-	jz compile_mult_loop_source_add
+	cmpl %edx, %edi # Check if it is a source add instruction
+	je compile_mult_loop_source_add
 	
 	movb 1(%rax), %sil # Get amount of the plus instruction
-	addl %edx, %edi # Add the memory pointer offset of the parent bracket frame
 	write_intermediate_instruction_amount_offset $OP_CODE_MULT_ADD, %sil, %edi
 	addq $MAX_INSTRUCTION_SIZE_MULT_ADD, %r13 # Increment maximum executable memory size
 	jmp compile_mult_loop
@@ -484,11 +470,10 @@ compile_mult_loop_end:
 	write_intermediate_instruction_amount_offset $OP_CODE_SET, $0, %edx
 
 	# Write load loop count instruction
-	shlq $32, %rdx # Shift memory pointer offset 4 bytes left to clear flags
-	shrq $16, %rdx # Shift memory pointer offset 2 bytes right
+	shlq $16, %rdx # Shift memory pointer offset 2 bytes left
 	movb %cl, %dh # Insert source add count
 	movb $OP_CODE_LOAD_LOOP_COUNT, %dl # Insert opcode
-	movq %rdx, (%r11) # Insert instruction
+	movq %rdx, (%r11) # Insert instruction, flags were already cleared by the initial move into %r11d
 
 	addq $MAX_INSTRUCTION_SIZE_SET + MAX_INSTRUCTION_SIZE_LOAD_LOOP_COUNT, %r13 # Increment maximum executable memory size
 	orl $LOOP_CONTAINS_SET | LOOP_CONTAINS_MULT, -16(%rbp) # Loop contains a set zero and a multiplication
@@ -498,7 +483,7 @@ compile_mult_loop_end:
 ################################## Set zero ##################################
 compile_loop_set_zero:
 	# Write set zero
-	addl 2(%rax), %edx # Take parent bracket memory pointer offset and add to it the offset from this plus instruction to get the offset to write
+	subq $8, %r12 # Move write pointer back onto the if instruction
 	write_intermediate_instruction_amount_offset $OP_CODE_SET, $0, %edx
 	addq $MAX_INSTRUCTION_SIZE_SET, %r13 # Increment maximum executable memory size
 	orl $LOOP_CONTAINS_SET, -16(%rbp) # Loop contains a set zero
@@ -512,19 +497,19 @@ compile_loop_copy:
 	movq 8(%rax), %rcx # Get second instruction
 
 	# If %rcx is the source add instruction, then swap them
-	cmpl $0, 10(%rax)
+	cmpl %edx, 10(%rax)
 	jne 1f
 	xchgq %r8, %rcx
 	1:
 
 	# Write load loop count instruction
+	subq $8, %r12 # Move write pointer back onto the if instruction
 	shrq $8, %r8 # Get source add count
 	write_intermediate_instruction_amount_offset $OP_CODE_LOAD_LOOP_COUNT, %r8b, %edx
 
 	# Write mult add instruction
 	movb %ch, %al # Get multiplication factor
 	shrq $16, %rcx # Get memory pointer offset
-	addl %edx, %ecx # Add memory pointer offset of instruction
 	write_intermediate_instruction_amount_offset $OP_CODE_MULT_ADD, %al, %ecx
 	orq $FLAG_LAST_MULT_ADD, -2(%r12) # Write last mult add flag
 
@@ -539,40 +524,82 @@ compile_loop_copy:
 
 ################################## Scan ##################################
 compile_loop_scan:	
+	pop_bracket_frame
 	movl -12(%rbp), %eax # Read memory pointer offset of right instruction
 	subq $8, %r12 # Go back to the if instruction
-	pop_bracket_frame
-	movl $0, -12(%rbp) # Reset memory pointer to match the movement before the if
-	addq $MAX_INSTRUCTION_SIZE_RIGHT + MAX_INSTRUCTION_SIZE_SCAN, %r13 # Increment maximum executable memory size, left3 is the biggest variant of the instruction
+	addq $MAX_INSTRUCTION_SIZE_SCAN, %r13 # Increment maximum executable memory size, left3 is the biggest variant of the instruction
 
-	write_intermediate_instruction_offset $OP_CODE_SCAN, %eax
+	write_intermediate_instruction_amount_offset $OP_CODE_SCAN, %dl, %eax
 	orl $LOOP_CONTAINS_SCAN, -16(%rbp)
 	jmp read_loop
 
 
 ################################## Registers ##################################
+compile_for_registers_nested:
+	# For this case we only need to check if the nested loops all have the make register flag.
+	# If so, then we can remove them and and make this loop a register loop. Otherwise no optimizations are possible.
+
+	jmp compile_for_no_optimizations
+	// movq -8(%rbp), %rax # Get address after if, used as index
+	// xorq %rcx, %rcx # Reset inner loop count, amount of if's and for's on the stack
+	// subq $8, %rax # Decrement to increment in loop entry
+	// compile_for_registers_nested_loop:
+	// 	# Incement and end condition
+	// 	addq $8, %rax # Increment index
+	// 	cmpq %rax, %r12 # Exit if loop index is current for
+	// 	je compile_for_registers_nested_loop_end
+	// 	movb (%rax), %dl # Get instruction
+
+	// 	# Check case for
+	// 	cmpb $OP_CODE_FOR, %dl # Check if it is a for
+	// 	jne 1f
+	// 	pushq %rax # Push address onto the stack for later
+	// 	incq %rcx # Increment address count on the stack
+	// 	1:
+
+	// 	# Check case if
+	// 	cmpb $OP_CODE_IF, %dl # Check if it is an if
+	// 	jne compile_for_registers_nested_loop
+	// 	testw $FLAG_MAKE_REGISTER_LOOP, 6(%rax) # Check if it has the make register flag
+	// 	jz compile_for_no_optimizations
+	// 	pushq %rax # Push address onto the stack for later
+	// 	incq %rcx # Increment address count on the stack
+	// 	jmp compile_for_registers_nested_loop
+	
+	// compile_for_registers_nested_loop_end:
+	// # We can optimize this loop, so remove all the flags and continue through to compile_for_registers
+
+	// 1:
+	// popq %rax # Get address of if or for
+	// andw $~FLAG_MAKE_REGISTER_LOOP, 6(%rax) # Remove make register flag
+	// loop 1b
+	// # Continue to compile_for_registers
+
+
 compile_for_registers:
 	movq -8(%rbp), %rax # Get address after if
 	orw $FLAG_MAKE_REGISTER_LOOP, -2(%rax) # Set flag in if
-	
-	compile_pop_mem_movement
-	write_intermediate_instruction $OP_CODE_FOR
-	orw $FLAG_MAKE_REGISTER_LOOP, -2(%r12) # Set flag in for
+
 	pop_bracket_frame
-	movl $0, -12(%rbp) # Reset memory pointer to match the movement before the if
+	movl -12(%rbp), %eax # Get offset from memory pointer
+	write_intermediate_instruction_offset $OP_CODE_FOR, %eax
+	orw $FLAG_MAKE_REGISTER_LOOP, -2(%r12) # Set flag in for
+
 	# Increment maximum executable memory size
-	addq $MAX_INSTRUCTION_SIZE_FOR + MAX_INSTRUCTION_SIZE_RIGHT + 2 * MAX_REGISTER_COUNT * SIZE_OP_REG_ADDR, %r13
+	addq $MAX_INSTRUCTION_SIZE_FOR + 2 * MAX_REGISTER_COUNT * SIZE_OP_REG_ADDR, %r13
 
 	orl $LOOP_CONTAINS_LOOP, -16(%rbp) # Loop contains a inner loop
 	jmp read_loop
+
+
 	
 
 .equ LOOP_CONTAINS_PLUS, 0x1
-.equ LOOP_CONTAINS_OUT, 0x10
-.equ LOOP_CONTAINS_SET, 0x4
-.equ LOOP_CONTAINS_MULT, 0x8
-.equ LOOP_CONTAINS_LOOP, 0x20
-.equ LOOP_HAS_TOTAL_RIGHT, 0x40
+.equ LOOP_CONTAINS_SET, 0x2
+.equ LOOP_CONTAINS_MULT, 0x4
+.equ LOOP_CONTAINS_OUT, 0x8
+.equ LOOP_CONTAINS_LOOP, 0x10
+.equ LOOP_HAS_TOTAL_RIGHT, 0x20
 
 # No optimizations possible
 .equ LOOP_NO_OPTIMIZATIONS, 0x10000000
@@ -596,23 +623,23 @@ compile_loop_jmp_table:
 	.quad compile_for_registers		   # 0x0D
 	.quad compile_for_registers		   # 0x0E
 	.quad compile_for_registers		   # 0x0F
-	.quad compile_for_registers		   # 0x10
-	.quad compile_for_registers		   # 0x11
-	.quad compile_for_registers		   # 0x12
-	.quad compile_for_registers		   # 0x13
-	.quad compile_for_registers		   # 0x14
-	.quad compile_for_registers		   # 0x15
-	.quad compile_for_registers		   # 0x16
-	.quad compile_for_registers		   # 0x17
-	.quad compile_for_registers		   # 0x18
-	.quad compile_for_registers		   # 0x19
-	.quad compile_for_registers		   # 0x1A
-	.quad compile_for_registers		   # 0x1B
-	.quad compile_for_registers		   # 0x1C
-	.quad compile_for_registers		   # 0x1D
-	.quad compile_for_registers		   # 0x1E
-	.quad compile_for_registers		   # 0x1F
-	.quad compile_for_no_optimizations # 0x20 Normal loop, but can use registers
+	.quad compile_for_registers_nested # 0x10 Normal nested loop, but can use registers
+	.quad compile_for_registers_nested # 0x11
+	.quad compile_for_registers_nested # 0x12
+	.quad compile_for_registers_nested # 0x13
+	.quad compile_for_registers_nested # 0x14
+	.quad compile_for_registers_nested # 0x15
+	.quad compile_for_registers_nested # 0x16
+	.quad compile_for_registers_nested # 0x17
+	.quad compile_for_registers_nested # 0x18
+	.quad compile_for_registers_nested # 0x19
+	.quad compile_for_registers_nested # 0x1A
+	.quad compile_for_registers_nested # 0x1B
+	.quad compile_for_registers_nested # 0x1C
+	.quad compile_for_registers_nested # 0x1D
+	.quad compile_for_registers_nested # 0x1E
+	.quad compile_for_registers_nested # 0x1F
+	.quad compile_loop_scan			   # 0x20 Scan loop
 	.quad compile_for_no_optimizations # 0x21
 	.quad compile_for_no_optimizations # 0x22
 	.quad compile_for_no_optimizations # 0x23
@@ -644,70 +671,6 @@ compile_loop_jmp_table:
 	.quad compile_for_no_optimizations # 0x3D
 	.quad compile_for_no_optimizations # 0x3E
 	.quad compile_for_no_optimizations # 0x3F
-	.quad compile_loop_scan			   # 0x40 Scan loop
-	.quad compile_for_no_optimizations # 0x41
-	.quad compile_for_no_optimizations # 0x42
-	.quad compile_for_no_optimizations # 0x43
-	.quad compile_for_no_optimizations # 0x44
-	.quad compile_for_no_optimizations # 0x45
-	.quad compile_for_no_optimizations # 0x46
-	.quad compile_for_no_optimizations # 0x47
-	.quad compile_for_no_optimizations # 0x48
-	.quad compile_for_no_optimizations # 0x49
-	.quad compile_for_no_optimizations # 0x4A
-	.quad compile_for_no_optimizations # 0x4B
-	.quad compile_for_no_optimizations # 0x4C
-	.quad compile_for_no_optimizations # 0x4D
-	.quad compile_for_no_optimizations # 0x4E
-	.quad compile_for_no_optimizations # 0x4F
-	.quad compile_for_no_optimizations # 0x50
-	.quad compile_for_no_optimizations # 0x51
-	.quad compile_for_no_optimizations # 0x52
-	.quad compile_for_no_optimizations # 0x53
-	.quad compile_for_no_optimizations # 0x54
-	.quad compile_for_no_optimizations # 0x55
-	.quad compile_for_no_optimizations # 0x56
-	.quad compile_for_no_optimizations # 0x57
-	.quad compile_for_no_optimizations # 0x58
-	.quad compile_for_no_optimizations # 0x59
-	.quad compile_for_no_optimizations # 0x5A
-	.quad compile_for_no_optimizations # 0x5B
-	.quad compile_for_no_optimizations # 0x5C
-	.quad compile_for_no_optimizations # 0x5D
-	.quad compile_for_no_optimizations # 0x5E
-	.quad compile_for_no_optimizations # 0x5F
-	.quad compile_for_no_optimizations # 0x60
-	.quad compile_for_no_optimizations # 0x61
-	.quad compile_for_no_optimizations # 0x62
-	.quad compile_for_no_optimizations # 0x63
-	.quad compile_for_no_optimizations # 0x64
-	.quad compile_for_no_optimizations # 0x65
-	.quad compile_for_no_optimizations # 0x66
-	.quad compile_for_no_optimizations # 0x67
-	.quad compile_for_no_optimizations # 0x68
-	.quad compile_for_no_optimizations # 0x69
-	.quad compile_for_no_optimizations # 0x6A
-	.quad compile_for_no_optimizations # 0x6B
-	.quad compile_for_no_optimizations # 0x6C
-	.quad compile_for_no_optimizations # 0x6D
-	.quad compile_for_no_optimizations # 0x6E
-	.quad compile_for_no_optimizations # 0x6F
-	.quad compile_for_no_optimizations # 0x70
-	.quad compile_for_no_optimizations # 0x71
-	.quad compile_for_no_optimizations # 0x72
-	.quad compile_for_no_optimizations # 0x73
-	.quad compile_for_no_optimizations # 0x74
-	.quad compile_for_no_optimizations # 0x75
-	.quad compile_for_no_optimizations # 0x76
-	.quad compile_for_no_optimizations # 0x77
-	.quad compile_for_no_optimizations # 0x78
-	.quad compile_for_no_optimizations # 0x79
-	.quad compile_for_no_optimizations # 0x7A
-	.quad compile_for_no_optimizations # 0x7B
-	.quad compile_for_no_optimizations # 0x7C
-	.quad compile_for_no_optimizations # 0x7D
-	.quad compile_for_no_optimizations # 0x7E
-	.quad compile_for_no_optimizations # 0x7F
 
 
 ##############################################################################################################################################
@@ -881,12 +844,13 @@ byte_code_out_addr:
 .endm
 
 .equ MAX_INSTRUCTION_SIZE_IF, INSTRUCTION_SIZE_IF_ADDR
-.equ INSTRUCTION_SIZE_IF_ADDR, 11
-#0 .byte 0x41, 0x80, 0x3C, 0x24, 0x00				cmpb $0, (%r12)
-#5 .byte 0x0F, 0x84, 0x00, 0x00, 0x00, 0x00			je(long jump) address
-.macro write_instruction_if_addr
-	movl $0x243C8041, (%r13)
-	movl $0x00840F00, 4(%r13)
+.equ INSTRUCTION_SIZE_IF_ADDR, 15
+#0 .byte 0x41, 0x80, 0xBC, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00		cmpb $0, address(%r12)
+#9 .byte 0x0F, 0x84, 0x00, 0x00, 0x00, 0x00							je(long jump) address
+.macro write_instruction_if_addr address
+	movl $0x24BC8041, (%r13)
+	movl \address, 4(%r13)
+	movl $0x00840F00, 8(%r13)
 	addq $INSTRUCTION_SIZE_IF_ADDR, %r13
 .endm
 
@@ -899,12 +863,13 @@ byte_code_out_addr:
 .endm
 
 .equ MAX_INSTRUCTION_SIZE_FOR, INSTRUCTION_SIZE_FOR_ADDR
-.equ INSTRUCTION_SIZE_FOR_ADDR, 11
-#0 .byte 0x41,0x80, 0x3C, 0x24, 0x00				cmpb $0, (%r12)
-#5 .byte 0x0F,0x85, 0x00, 0x00, 0x00, 0x00			jne(long jump) address
-.macro write_instruction_for_addr
-	movl $0x243C8041, (%r13)
-	movl $0x00850F00, 4(%r13)
+.equ INSTRUCTION_SIZE_FOR_ADDR, 15
+#0 .byte 0x41, 0x80, 0xBC, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00		cmpb $0, address(%r12)
+#9 .byte 0x0F, 0x85, 0x00, 0x00, 0x00, 0x00							jne(long jump) address
+.macro write_instruction_for_addr address
+	movl $0x24BC8041, (%r13)
+	movl \address, 4(%r13)
+	movl $0x00850F00, 8(%r13)
 	addq $INSTRUCTION_SIZE_FOR_ADDR, %r13
 .endm
 
@@ -1258,21 +1223,23 @@ byte_code_load_loop_count_scan:
 
 ################################## Scan ##################################
 .equ MAX_INSTRUCTION_SIZE_SCAN, INSTRUCTION_SIZE_SCAN_LEFT_3
-.equ INSTRUCTION_SIZE_SCAN_LOOP, 21
+.equ INSTRUCTION_SIZE_SCAN_LOOP, 25
 .align 8
 byte_code_scan_loop:
-	.byte 0x49, 0x81, 0xEC, 0x00, 0x00, 0x00, 0x00		#0  subq $right_count, %r12
-	.byte 0x49, 0x81, 0xC4, 0x00, 0x00, 0x00, 0x00		#7  1: addq $right_count, %r12
-	.byte 0x41, 0x80, 0x3C, 0x24, 0x00					#14 cmpb $0, (%r12)
-	.byte 0x75, 0xF2									#19 jne 1b
-	.byte 0x00, 0x00, 0x00								# Padding
-.macro write_instruction_scan_loop right_count
-	movq $3, %rcx # Quad count
+	.byte 0x49, 0x81, 0xEC, 0x00, 0x00, 0x00, 0x00					#0  subq $right_count, %r12
+	.byte 0x49, 0x81, 0xC4, 0x00, 0x00, 0x00, 0x00					#7  1: addq $right_count, %r12
+	.byte 0x41, 0x80, 0xBC, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00		#14 cmpb $0, address(%r12)
+	.byte 0x75, 0xEE												#23 jne 1b
+	.byte 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00					# Padding
+.macro write_instruction_scan_loop right_count, address
+	movsxb \right_count, %r8d # Get right count as a long
+	movq $4, %rcx # Quad count
 	movq %r13, %rdi # Destination
 	movq $byte_code_scan_loop, %rsi # Source
 	rep movsq
-	movl \right_count, 3(%r13)
-	movl \right_count, 10(%r13)
+	movl %r8d, 3(%r13)
+	movl %r8d, 10(%r13)
+	movl \address, 18(%r13)
 	addq $INSTRUCTION_SIZE_SCAN_LOOP, %r13
 .endm
 
@@ -1292,141 +1259,143 @@ scan_subtraction_minuends_threes:
 	.quad 0x0001000001000001, 0x0100000100000100, 0x0000010000010000, 0x0001000001000001
 	.word 0x0100
 
-.equ INSTRUCTION_SIZE_SCAN_RIGHT_3, 116
+.equ INSTRUCTION_SIZE_SCAN_RIGHT_3, 120
 .align 8
 byte_code_scan_right_3:
-	.byte 0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00			#0   movq $1, %rcx
-	.byte 0xFE, 0xC9										#7   1: decb %cl
-	.byte 0x79, 0x02										#9   jns 2f
-	.byte 0xB1, 0x02										#11  movb $2, %cl
+	.byte 0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00						#0   movq $1, %rcx
+	.byte 0xFE, 0xC9													#7   1: decb %cl
+	.byte 0x79, 0x02													#9   jns 2f
+	.byte 0xB1, 0x02													#11  movb $2, %cl
 
-	.byte 0xC5, 0xFE, 0x6F, 0x81, 0x00, 0x00, 0x00, 0x00	#13  2: vmovdqu scan_subtraction_minuends_threes(%rcx), %ymm0
-	.byte 0xC4, 0xC1, 0x7E, 0x6F, 0x0C, 0x24				#21  vmovdqu (%r12), %ymm1
-	.byte 0xC5, 0xFD, 0xD8, 0xC9, 0x66						#27  vpsubusb %ymm1, %ymm0, %ymm1
-	.byte 0x49, 0x0F, 0x7E, 0xC8							#32  movq %xmm1, %r8
-	.byte 0x4D, 0x85, 0xC0									#36  testq %r8, %r8
-	.byte 0x75, 0x40										#39  jnz 1f
+	.byte 0xC5, 0xFE, 0x6F, 0x81, 0x00, 0x00, 0x00, 0x00				#13  2: vmovdqu scan_subtraction_minuends_threes(%rcx), %ymm0
+	.byte 0xC4, 0xC1, 0x7E, 0x6F, 0x8C, 0x24, 0x00, 0x00, 0x00, 0x00	#21  vmovdqu address(%r12), %ymm1
+	.byte 0xC5, 0xFD, 0xD8, 0xC9, 0x66									#31  vpsubusb %ymm1, %ymm0, %ymm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8										#36  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0												#40  testq %r8, %r8
+	.byte 0x75, 0x40													#43  jnz 1f
 
-	.byte 0x49, 0x83, 0xC4, 0x08							#41  addq $8, %r12
-	.byte 0xC5, 0xE9, 0x73, 0xD9, 0x08, 0x66				#45  vpsrldq $8, %xmm1, %xmm2
-	.byte 0x49, 0x0F, 0x7E, 0xD0							#51  movq %xmm2, %r8
-	.byte 0x4D, 0x85, 0xC0									#55  testq %r8, %r8
-	.byte 0x75, 0x2D										#58  jnz 1f
+	.byte 0x49, 0x83, 0xC4, 0x08										#45  addq $8, %r12
+	.byte 0xC5, 0xE9, 0x73, 0xD9, 0x08, 0x66							#49  vpsrldq $8, %xmm1, %xmm2
+	.byte 0x49, 0x0F, 0x7E, 0xD0										#55  movq %xmm2, %r8
+	.byte 0x4D, 0x85, 0xC0												#59  testq %r8, %r8
+	.byte 0x75, 0x2D													#62  jnz 1f
 
-	.byte 0x49, 0x83, 0xC4, 0x08							#60  addq $8, %r12
-	.byte 0xC4, 0xE3, 0x7D, 0x39, 0xC9, 0x01, 0x66			#64  vextracti128 $1, %ymm1, %xmm1
-	.byte 0x49, 0x0F, 0x7E, 0xC8							#71  movq %xmm1, %r8
-	.byte 0x4D, 0x85, 0xC0									#75  testq %r8, %r8
-	.byte 0x75, 0x19										#78  jnz 1f
+	.byte 0x49, 0x83, 0xC4, 0x08										#64  addq $8, %r12
+	.byte 0xC4, 0xE3, 0x7D, 0x39, 0xC9, 0x01, 0x66						#68  vextracti128 $1, %ymm1, %xmm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8										#75  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0												#79  testq %r8, %r8
+	.byte 0x75, 0x19													#82  jnz 1f
 
-	.byte 0x49, 0x83, 0xC4, 0x08							#80  addq $8, %r12
-	.byte 0xC5, 0xF1, 0x73, 0xD9, 0x08, 0x66				#84  vpsrldq $8, %xmm1, %xmm1
-	.byte 0x49, 0x0F, 0x7E, 0xC8							#90  movq %xmm1, %r8
-	.byte 0x4D, 0x85, 0xC0									#94  testq %r8, %r8
-	.byte 0x75, 0x06										#97  jnz 1f
-	.byte 0x49, 0x83, 0xC4, 0x08							#99  addq $8, %r12
-	.byte 0xEB, 0x9E										#103 jmp 1b
+	.byte 0x49, 0x83, 0xC4, 0x08										#84  addq $8, %r12
+	.byte 0xC5, 0xF1, 0x73, 0xD9, 0x08, 0x66							#88  vpsrldq $8, %xmm1, %xmm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8										#94  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0												#98  testq %r8, %r8
+	.byte 0x75, 0x06													#101 jnz 1f
+	.byte 0x49, 0x83, 0xC4, 0x08										#103 addq $8, %r12
+	.byte 0xEB, 0x9A													#107 jmp 1b
 
-	.byte 0x4D, 0x0F, 0xBC, 0xC0							#105 1: bsrq %r8, %r8
-	.byte 0x49, 0xC1, 0xE8, 0x03							#109 shrq $3, %r8
-	.byte 0x4D, 0x01, 0xC4									#113 addq %r8, %r12
-	.byte 0x00, 0x00, 0x00, 0x00							# Padding
-.macro write_instruction_scan_right_3
+	.byte 0x4D, 0x0F, 0xBC, 0xC0										#109 1: bsrq %r8, %r8
+	.byte 0x49, 0xC1, 0xE8, 0x03										#113 shrq $3, %r8
+	.byte 0x4D, 0x01, 0xC4												#117 addq %r8, %r12
+.macro write_instruction_scan_right_3 address
 	movq $15, %rcx # Quad count
 	movq %r13, %rdi # Destination
 	movq $byte_code_scan_right_3, %rsi # Source
 	rep movsq
 	addq $scan_subtraction_minuends_threes, 17(%r13) # Insert minuend address
+	movl \address, 27(%r13)
 	addq $INSTRUCTION_SIZE_SCAN_RIGHT_3, %r13
 .endm
 
-.equ INSTRUCTION_SIZE_SCAN_LEFT_3, 123
+.equ INSTRUCTION_SIZE_SCAN_LEFT_3, 126
 .align 8
 byte_code_scan_left_3:
-	.byte 0x48, 0xC7, 0xC1, 0x04, 0x00, 0x00, 0x00			#0   movq $4, %rcx
-	.byte 0x80, 0xE9, 0x02									#7   1: subb $2, %cl
-	.byte 0x79, 0x03										#10  jns 2f
-	.byte 0x80, 0xC1, 0x03									#12  addb $3, %cl
+	.byte 0x48, 0xC7, 0xC1, 0x04, 0x00, 0x00, 0x00						#0   movq $4, %rcx
+	.byte 0x80, 0xE9, 0x02												#7   1: subb $2, %cl
+	.byte 0x79, 0x03													#10  jns 2f
+	.byte 0x80, 0xC1, 0x03												#12  addb $3, %cl
 
-	.byte 0xC5, 0xFE, 0x6F, 0x81, 0x00, 0x00, 0x00, 0x00	#15  2: vmovdqu scan_subtraction_minuends_threes(%rcx), %ymm0
-	.byte 0xC4, 0xC1, 0x7E, 0x6F, 0x4C, 0x24, 0xE1			#23  vmovdqu -31(%r12), %ymm1
-	.byte 0xC5, 0xFD, 0xD8, 0xE1							#30  vpsubusb %ymm1, %ymm0, %ymm4
-	.byte 0xC4, 0xE3, 0x7D, 0x39, 0xE2, 0x01				#34  vextracti128 $1, %ymm4, %xmm2
-	.byte 0xC5, 0xF1, 0x73, 0xDA, 0x08, 0x66				#40  vpsrldq $8, %xmm2, %xmm1
-	.byte 0x49, 0x0F, 0x7E, 0xC8							#46  movq %xmm1, %r8
-	.byte 0x4D, 0x85, 0xC0									#50  testq %r8, %r8
-	.byte 0x75, 0x35										#53  jnz 1f
+	.byte 0xC5, 0xFE, 0x6F, 0x81, 0x00, 0x00, 0x00, 0x00				#15  2: vmovdqu scan_subtraction_minuends_threes(%rcx), %ymm0
+	.byte 0xC4, 0xC1, 0x7E, 0x6F, 0x8C, 0x24, 0x00, 0x00, 0x00, 0x00	#23  vmovdqu address - 31(%r12), %ymm1
+	.byte 0xC5, 0xFD, 0xD8, 0xE1										#33  vpsubusb %ymm1, %ymm0, %ymm4
+	.byte 0xC4, 0xE3, 0x7D, 0x39, 0xE2, 0x01							#37  vextracti128 $1, %ymm4, %xmm2
+	.byte 0xC5, 0xF1, 0x73, 0xDA, 0x08, 0x66							#43  vpsrldq $8, %xmm2, %xmm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8										#49  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0												#53  testq %r8, %r8
+	.byte 0x75, 0x35													#56  jnz 1f
 
-	.byte 0x49, 0x83, 0xEC, 0x08, 0x66						#55  subq $8, %r12
-	.byte 0x49, 0x0F, 0x7E, 0xD0							#60  movq %xmm2, %r8
-	.byte 0x4D, 0x85, 0xC0									#64  testq %r8, %r8
-	.byte 0x75, 0x27										#67  jnz 1f
+	.byte 0x49, 0x83, 0xEC, 0x08, 0x66									#58  subq $8, %r12
+	.byte 0x49, 0x0F, 0x7E, 0xD0										#63  movq %xmm2, %r8
+	.byte 0x4D, 0x85, 0xC0												#67  testq %r8, %r8
+	.byte 0x75, 0x27													#70  jnz 1f
 
-	.byte 0x49, 0x83, 0xEC, 0x08							#69  subq $8, %r12
-	.byte 0xC5, 0xE1, 0x73, 0xDC, 0x08, 0x66				#73  vpsrldq $8, %xmm4, %xmm3
-	.byte 0x49, 0x0F, 0x7E, 0xD8							#79  movq %xmm3, %r8
-	.byte 0x4D, 0x85, 0xC0									#83  testq %r8, %r8
-	.byte 0x75, 0x14										#86  jnz 1f
+	.byte 0x49, 0x83, 0xEC, 0x08										#72  subq $8, %r12
+	.byte 0xC5, 0xE1, 0x73, 0xDC, 0x08, 0x66							#76  vpsrldq $8, %xmm4, %xmm3
+	.byte 0x49, 0x0F, 0x7E, 0xD8										#82  movq %xmm3, %r8
+	.byte 0x4D, 0x85, 0xC0												#86  testq %r8, %r8
+	.byte 0x75, 0x14													#89  jnz 1f
 
-	.byte 0x49, 0x83, 0xEC, 0x08, 0x66						#88  subq $8, %r12
-	.byte 0x49, 0x0F, 0x7E, 0xE0							#93  movq %xmm4, %r8
-	.byte 0x4D, 0x85, 0xC0									#97  testq %r8, %r8
-	.byte 0x75, 0x06										#100 jnz 1f
-	.byte 0x49, 0x83, 0xEC, 0x08							#102 subq $8, %r12
-	.byte 0xEB, 0x9B										#106 jmp 1b
+	.byte 0x49, 0x83, 0xEC, 0x08, 0x66									#91  subq $8, %r12
+	.byte 0x49, 0x0F, 0x7E, 0xE0										#96  movq %xmm4, %r8
+	.byte 0x4D, 0x85, 0xC0												#100 testq %r8, %r8
+	.byte 0x75, 0x06													#103 jnz 1f
+	.byte 0x49, 0x83, 0xEC, 0x08										#105 subq $8, %r12
+	.byte 0xEB, 0x98													#109 jmp 1b
 
-	.byte 0x4D, 0x0F, 0xBD, 0xC0							#108 1: bsrq %r8, %r8
-	.byte 0x49, 0xC1, 0xE8, 0x03							#112 shrq $3, %r8
-	.byte 0x4D, 0x01, 0xC4									#116 addq %r8, %r12
-	.byte 0x49, 0x83, 0xEC, 0x07							#119 subq $7, %r12
-	.byte 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00			# Padding
-.macro write_instruction_scan_left_3
+	.byte 0x4D, 0x0F, 0xBD, 0xC0										#111 1: bsrq %r8, %r8
+	.byte 0x49, 0xC1, 0xE8, 0x03										#115 shrq $3, %r8
+	.byte 0x4D, 0x01, 0xC4												#119 addq %r8, %r12
+	.byte 0x49, 0x83, 0xEC, 0x07										#122 subq $7, %r12
+	.byte 0x00, 0x00													# Padding
+.macro write_instruction_scan_left_3 address
 	movq $16, %rcx # Quad count
 	movq %r13, %rdi # Destination
 	movq $byte_code_scan_left_3, %rsi # Source
 	rep movsq
 	addq $scan_subtraction_minuends_threes, 19(%r13) # Insert minuend address
+	subl $31, \address # Insert address - 31
+	movl \address, 29(%r13)
 	addq $INSTRUCTION_SIZE_SCAN_LEFT_3, %r13
 .endm
 
-.equ INSTRUCTION_SIZE_SCAN_RIGHT_POW2, 107
+.equ INSTRUCTION_SIZE_SCAN_RIGHT_POW2, 111
 .align 8
 byte_code_scan_right_pow2:
-	.byte 0x49, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00			#0   movq $minuend_index, %r8
-	.byte 0xC4, 0xC1, 0x7D, 0x6F, 0x00						#7   vmovdqa (%r8), %ymm0
+	.byte 0x49, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00						#0   movq $minuend_index, %r8
+	.byte 0xC4, 0xC1, 0x7D, 0x6F, 0x00									#7   vmovdqa (%r8), %ymm0
 
-	.byte 0xC4, 0xC1, 0x7E, 0x6F, 0x0C, 0x24				#12  1: vmovdqu (%r12), %ymm1
-	.byte 0xC5, 0xFD, 0xD8, 0xC9, 0x66						#18  vpsubusb %ymm1, %ymm0, %ymm1
-	.byte 0x49, 0x0F, 0x7E, 0xC8							#23  movq %xmm1, %r8
-	.byte 0x4D, 0x85, 0xC0									#27  testq %r8, %r8
-	.byte 0x75, 0x40										#30  jnz 1f
+	.byte 0xC4, 0xC1, 0x7E, 0x6F, 0x8C, 0x24, 0x00, 0x00, 0x00, 0x00	#12  1: vmovdqu address(%r12), %ymm1
+	.byte 0xC5, 0xFD, 0xD8, 0xC9, 0x66									#22  vpsubusb %ymm1, %ymm0, %ymm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8										#27  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0												#31  testq %r8, %r8
+	.byte 0x75, 0x40													#34  jnz 1f
 
-	.byte 0x49, 0x83, 0xC4, 0x08							#32  addq $8, %r12
-	.byte 0xC5, 0xE9, 0x73, 0xD9, 0x08, 0x66				#36  vpsrldq $8, %xmm1, %xmm2
-	.byte 0x49, 0x0F, 0x7E, 0xD0							#42  movq %xmm2, %r8
-	.byte 0x4D, 0x85, 0xC0									#46  testq %r8, %r8
-	.byte 0x75, 0x2D										#49  jnz 1f
+	.byte 0x49, 0x83, 0xC4, 0x08										#36  addq $8, %r12
+	.byte 0xC5, 0xE9, 0x73, 0xD9, 0x08, 0x66							#40  vpsrldq $8, %xmm1, %xmm2
+	.byte 0x49, 0x0F, 0x7E, 0xD0										#46  movq %xmm2, %r8
+	.byte 0x4D, 0x85, 0xC0												#50  testq %r8, %r8
+	.byte 0x75, 0x2D													#53  jnz 1f
 
-	.byte 0x49, 0x83, 0xC4, 0x08							#51  addq $8, %r12
-	.byte 0xC4, 0xE3, 0x7D, 0x39, 0xC9, 0x01, 0x66			#55  vextracti128 $1, %ymm1, %xmm1
-	.byte 0x49, 0x0F, 0x7E, 0xC8							#62  movq %xmm1, %r8
-	.byte 0x4D, 0x85, 0xC0									#66  testq %r8, %r8
-	.byte 0x75, 0x19										#69  jnz 1f
+	.byte 0x49, 0x83, 0xC4, 0x08										#55  addq $8, %r12
+	.byte 0xC4, 0xE3, 0x7D, 0x39, 0xC9, 0x01, 0x66						#59  vextracti128 $1, %ymm1, %xmm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8										#66  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0												#70  testq %r8, %r8
+	.byte 0x75, 0x19													#73  jnz 1f
 
-	.byte 0x49, 0x83, 0xC4, 0x08							#71  addq $8, %r12
-	.byte 0xC5, 0xF1, 0x73, 0xD9, 0x08, 0x66				#75  vpsrldq $8, %xmm1, %xmm1
-	.byte 0x49, 0x0F, 0x7E, 0xC8							#81  movq %xmm1, %r8
-	.byte 0x4D, 0x85, 0xC0									#85  testq %r8, %r8
-	.byte 0x75, 0x06										#88  jnz 1f
-	.byte 0x49, 0x83, 0xC4, 0x08							#90  addq $8, %r12
-	.byte 0xEB, 0xAC										#94  jmp 1b
+	.byte 0x49, 0x83, 0xC4, 0x08										#75  addq $8, %r12
+	.byte 0xC5, 0xF1, 0x73, 0xD9, 0x08, 0x66							#79  vpsrldq $8, %xmm1, %xmm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8										#85  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0												#89  testq %r8, %r8
+	.byte 0x75, 0x06													#92  jnz 1f
+	.byte 0x49, 0x83, 0xC4, 0x08										#94  addq $8, %r12
+	.byte 0xEB, 0xA8													#98  jmp 1b
 
-	.byte 0x4D, 0x0F, 0xBC, 0xC0							#96  1: bsrq %r8, %r8
-	.byte 0x49, 0xC1, 0xE8, 0x03							#100 shrq $3, %r8
-	.byte 0x4D, 0x01, 0xC4									#104 addq %r8, %r12
-	.byte 0x00, 0x00, 0x00, 0x00, 0x00						# Padding
-.macro write_instruction_scan_right_pow2 right_count
-	movl \right_count, %r8d # Get minuend index
+	.byte 0x4D, 0x0F, 0xBC, 0xC0										#100 1: bsrq %r8, %r8
+	.byte 0x49, 0xC1, 0xE8, 0x03										#104 shrq $3, %r8
+	.byte 0x4D, 0x01, 0xC4												#108 addq %r8, %r12
+	.byte 0x00															# Padding
+.macro write_instruction_scan_right_pow2 right_count, address
+	movsxb \right_count, %r8 # Get minuend index
 	shlq $5, %r8
 	addq $scan_subtraction_minuends_right, %r8
 	movq $14, %rcx # Quad count
@@ -1434,91 +1403,95 @@ byte_code_scan_right_pow2:
 	movq $byte_code_scan_right_pow2, %rsi # Source
 	rep movsq
 	movl %r8d, 3(%r13) # Insert minuend index
+	movl \address, 18(%r13) # Insert address
 	addq $INSTRUCTION_SIZE_SCAN_RIGHT_POW2, %r13
 .endm
 
-.equ INSTRUCTION_SIZE_SCAN_LEFT_POW2, 112
+.equ INSTRUCTION_SIZE_SCAN_LEFT_POW2, 115
 .align 8
 byte_code_scan_left_pow2:
-	.byte 0x49, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00			#0   movq $minuend_index, %r8
-	.byte 0xC4, 0xC1, 0x7D, 0x6F, 0x00						#7   vmovdqa (%r8), %ymm0
+	.byte 0x49, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00						#0   movq $minuend_index, %r8
+	.byte 0xC4, 0xC1, 0x7D, 0x6F, 0x00									#7   vmovdqa (%r8), %ymm0
 
-	.byte 0xC4, 0xC1, 0x7E, 0x6F, 0x4C, 0x24, 0xE1			#12  1: vmovdqu -31(%r12), %ymm1
-	.byte 0xC5, 0xFD, 0xD8, 0xE1							#19  vpsubusb %ymm1, %ymm0, %ymm4
-	.byte 0xC4, 0xE3, 0x7D, 0x39, 0xE2, 0x01				#23  vextracti128 $1, %ymm4, %xmm2
-	.byte 0xC5, 0xF1, 0x73, 0xDA, 0x08, 0x66				#29  vpsrldq $8, %xmm2, %xmm1
-	.byte 0x49, 0x0F, 0x7E, 0xC8							#35  movq %xmm1, %r8
-	.byte 0x4D, 0x85, 0xC0									#39  testq %r8, %r8
-	.byte 0x75, 0x35										#42  jnz 1f
+	.byte  0xC4, 0xC1, 0x7E, 0x6F, 0x8C, 0x24, 0x00, 0x00, 0x00, 0x00	#12  1: vmovdqu address - 31(%r12), %ymm1
+	.byte 0xC5, 0xFD, 0xD8, 0xE1										#22  vpsubusb %ymm1, %ymm0, %ymm4
+	.byte 0xC4, 0xE3, 0x7D, 0x39, 0xE2, 0x01							#26  vextracti128 $1, %ymm4, %xmm2
+	.byte 0xC5, 0xF1, 0x73, 0xDA, 0x08, 0x66							#32  vpsrldq $8, %xmm2, %xmm1
+	.byte 0x49, 0x0F, 0x7E, 0xC8										#38  movq %xmm1, %r8
+	.byte 0x4D, 0x85, 0xC0												#42  testq %r8, %r8
+	.byte 0x75, 0x35													#45  jnz 1f
 
-	.byte 0x49, 0x83, 0xEC, 0x08, 0x66						#44  subq $8, %r12
-	.byte 0x49, 0x0F, 0x7E, 0xD0							#49  movq %xmm2, %r8
-	.byte 0x4D, 0x85, 0xC0									#53  testq %r8, %r8
-	.byte 0x75, 0x27										#56  jnz 1f
+	.byte 0x49, 0x83, 0xEC, 0x08, 0x66									#47  subq $8, %r12
+	.byte 0x49, 0x0F, 0x7E, 0xD0										#52  movq %xmm2, %r8
+	.byte 0x4D, 0x85, 0xC0												#56  testq %r8, %r8
+	.byte 0x75, 0x27													#59  jnz 1f
 
-	.byte 0x49, 0x83, 0xEC, 0x08							#58  subq $8, %r12
-	.byte 0xC5, 0xE1, 0x73, 0xDC, 0x08, 0x66				#62  vpsrldq $8, %xmm4, %xmm3
-	.byte 0x49, 0x0F, 0x7E, 0xD8							#68  movq %xmm3, %r8
-	.byte 0x4D, 0x85, 0xC0									#72  testq %r8, %r8
-	.byte 0x75, 0x14										#75  jnz 1f
+	.byte 0x49, 0x83, 0xEC, 0x08										#61  subq $8, %r12
+	.byte 0xC5, 0xE1, 0x73, 0xDC, 0x08, 0x66							#65  vpsrldq $8, %xmm4, %xmm3
+	.byte 0x49, 0x0F, 0x7E, 0xD8										#71  movq %xmm3, %r8
+	.byte 0x4D, 0x85, 0xC0												#75  testq %r8, %r8
+	.byte 0x75, 0x14													#78  jnz 1f
 
-	.byte 0x49, 0x83, 0xEC, 0x08, 0x66						#77  subq $8, %r12
-	.byte 0x49, 0x0F, 0x7E, 0xE0							#82  movq %xmm4, %r8
-	.byte 0x4D, 0x85, 0xC0									#86  testq %r8, %r8
-	.byte 0x75, 0x06										#89  jnz 1f
-	.byte 0x49, 0x83, 0xEC, 0x08							#91  subq $8, %r12
-	.byte 0xEB, 0xAB										#95  jmp 1b
+	.byte 0x49, 0x83, 0xEC, 0x08, 0x66									#80  subq $8, %r12
+	.byte 0x49, 0x0F, 0x7E, 0xE0										#85  movq %xmm4, %r8
+	.byte 0x4D, 0x85, 0xC0												#89  testq %r8, %r8
+	.byte 0x75, 0x06													#92  jnz 1f
+	.byte 0x49, 0x83, 0xEC, 0x08										#94  subq $8, %r12
+	.byte 0xEB, 0xA8													#98  jmp 1b
 
-	.byte 0x4D, 0x0F, 0xBD, 0xC0							#97  1: bsrq %r8, %r8
-	.byte 0x49, 0xC1, 0xE8, 0x03							#101 shrq $3, %r8
-	.byte 0x4D, 0x01, 0xC4									#105 addq %r8, %r12
-	.byte 0x49, 0x83, 0xEC, 0x07							#108 subq $7, %r12
-.macro write_instruction_scan_left_pow2 left_count
-	movl \left_count, %r8d # Get minuend index
+	.byte 0x4D, 0x0F, 0xBD, 0xC0										#100 1: bsrq %r8, %r8
+	.byte 0x49, 0xC1, 0xE8, 0x03										#104 shrq $3, %r8
+	.byte 0x4D, 0x01, 0xC4												#108 addq %r8, %r12
+	.byte 0x49, 0x83, 0xEC, 0x07										#111 subq $7, %r12
+	.byte 0x00, 0x00, 0x00, 0x00, 0x00									# Padding
+.macro write_instruction_scan_left_pow2 left_count, address
+	movsxb \left_count, %r8 # Get minuend index
 	shlq $5, %r8
 	addq $scan_subtraction_minuends_left, %r8
-	movq $14, %rcx # Quad count
+	movq $15, %rcx # Quad count
 	movq %r13, %rdi # Destination
 	movq $byte_code_scan_left_pow2, %rsi # Source
 	rep movsq
 	movl %r8d, 3(%r13) # Insert minuend index
+	subl $31, \address # Insert address - 31
+	movl \address, 18(%r13)
 	addq $INSTRUCTION_SIZE_SCAN_LEFT_POW2, %r13
 .endm
 
-.macro write_scan right_count
+.macro write_scan right_count, address
 	# Get absolute value
-	movl \right_count, %r8d
-	cmpl $0, %r8d
+	movb \right_count, %r8b
+	cmpb $0, %r8b
 	jge 10f
-	negl %r8d
+	negb %r8b
 10:
 
 	# Case greater than 4
-	cmpl $4, %r8d
+	cmpb $4, %r8b
 	jbe 10f
-	write_instruction_scan_loop \right_count
+	write_instruction_scan_loop \right_count, \address
 	jmp 30f
 10:
 
 	# Case 3
-	cmpl $3, %r8d
+	cmpb $3, %r8b
 	jne 10f
-	cmpl $0, \right_count # Check if right count is negative
+	cmpb $0, \right_count # Check if right count is negative
 	jge 20f
-	write_instruction_scan_left_3
+	write_instruction_scan_left_3 \address
 	jmp 30f
 20:
-	write_instruction_scan_right_3
+	write_instruction_scan_right_3 \address
 	jmp 30f
 10:
 
 	# Case power of 2
-	cmpl $0, \right_count # Check if right count is negative
+	cmpb $0, \right_count # Check if right count is negative
 	jge 10f
-	write_instruction_scan_left_pow2 %r8d
+	write_instruction_scan_left_pow2 %r8b, \address
 	jmp 30f
 10:
-	write_instruction_scan_right_pow2 %r8d
+	write_instruction_scan_right_pow2 %r8b, \address
 	jmp 30f
 30:
 .endm
@@ -1622,8 +1595,9 @@ sp_compile_right:
 	jmp compile_second_pass_loop
 
 sp_compile_scan:
+	movb %dh, %al # Get amount
 	shrq $16, %rdx # Get memory pointer offset
-	write_scan %edx
+	write_scan %al, %edx
 	jmp compile_second_pass_loop
 
 sp_compile_in:
@@ -1645,15 +1619,15 @@ sp_compile_out:
 
 sp_compile_if:
 	# Start with the if, then do the loading if necessary
+	shrq $16, %rdx # Get register
 	movq %rdx, %rcx # Get flags
-	shrq $48, %rcx
+	shrq $32, %rcx
 	testw $FLAG_USE_REGISTER, %cx
 	jz 100f
-	shrq $16, %rdx # Get register
 	write_instruction_if_reg %edx
 	jmp 200f
 	100:
-	write_instruction_if_addr
+	write_instruction_if_addr %edx
 	200:
 
 	testw $FLAG_MAKE_REGISTER_LOOP, %cx
@@ -1732,17 +1706,17 @@ sp_compile_if:
 	jmp compile_second_pass_loop
 
 sp_compile_for:
+	shrq $16, %rdx # Get register
 	movq %rdx, %rcx # Get flags
-	shrq $48, %rcx
+	shrq $32, %rcx
 	testw $FLAG_USE_REGISTER, %cx
 
 	# Write for instruction
 	jz 100f
-	shrq $16, %rdx # Get register
 	write_instruction_for_reg %edx
 	jmp 200f
 	100:
-	write_instruction_for_addr
+	write_instruction_for_addr %edx
 	200:
 
 	popq %rax # Get address of first instruction after if instruction
