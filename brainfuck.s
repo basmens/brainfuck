@@ -523,7 +523,12 @@ compile_loop_copy:
 
 
 ################################## Scan ##################################
-compile_loop_scan:	
+compile_loop_scan:
+	# Check if movement fits in one byte
+	movsxb %dl, %eax
+	cmpl %eax, %edx
+	jne compile_for_no_optimizations
+
 	pop_bracket_frame
 	movl -12(%rbp), %eax # Read memory pointer offset of right instruction
 	subq $8, %r12 # Go back to the if instruction
@@ -539,41 +544,44 @@ compile_for_registers_nested:
 	# For this case we only need to check if the nested loops all have the make register flag.
 	# If so, then we can remove them and and make this loop a register loop. Otherwise no optimizations are possible.
 
-	jmp compile_for_no_optimizations
-	// movq -8(%rbp), %rax # Get address after if, used as index
-	// xorq %rcx, %rcx # Reset inner loop count, amount of if's and for's on the stack
-	// subq $8, %rax # Decrement to increment in loop entry
-	// compile_for_registers_nested_loop:
-	// 	# Incement and end condition
-	// 	addq $8, %rax # Increment index
-	// 	cmpq %rax, %r12 # Exit if loop index is current for
-	// 	je compile_for_registers_nested_loop_end
-	// 	movb (%rax), %dl # Get instruction
+	movq -8(%rbp), %rax # Get address after if, used as index
+	xorq %rcx, %rcx # Reset inner loop count, amount of if's and for's on the stack
+	subq $8, %rax # Decrement to increment in loop entry
+	compile_for_registers_nested_loop:
+		# Incement and end condition
+		addq $8, %rax # Increment index
+		cmpq %rax, %r12 # Exit if loop index is current for
+		je compile_for_registers_nested_loop_end
 
-	// 	# Check case for
-	// 	cmpb $OP_CODE_FOR, %dl # Check if it is a for
-	// 	jne 1f
-	// 	pushq %rax # Push address onto the stack for later
-	// 	incq %rcx # Increment address count on the stack
-	// 	1:
+		# Check if if has the make register flag, if so, we scan until it's for and store both their addresses for clearing of the
+		# make register flag. This side-by-side scan is done because double nested loop have already lost their flag, but are still valid.
+		cmpb $OP_CODE_IF, (%rax) # Check if it is an if
+		jne compile_for_registers_nested_loop
+		testw $FLAG_MAKE_REGISTER_LOOP, 6(%rax) # Check if it has the make register flag
+		jz compile_for_no_optimizations # If not, then we can't optimize this loop
 
-	// 	# Check case if
-	// 	cmpb $OP_CODE_IF, %dl # Check if it is an if
-	// 	jne compile_for_registers_nested_loop
-	// 	testw $FLAG_MAKE_REGISTER_LOOP, 6(%rax) # Check if it has the make register flag
-	// 	jz compile_for_no_optimizations
-	// 	pushq %rax # Push address onto the stack for later
-	// 	incq %rcx # Increment address count on the stack
-	// 	jmp compile_for_registers_nested_loop
+		pushq %rax # Push address onto the stack for later
+		incq %rcx # Increment address count on the stack
+
+		# Scan until the for
+		1:
+		addq $8, %rax # Increment index
+		cmpb $OP_CODE_FOR, (%rax) # Check if it is a for
+		jne 1b
+		testw $FLAG_MAKE_REGISTER_LOOP, 6(%rax) # Check if it has the make register flag
+		jz 1b # If not, this isn't the matching for, so continue searching
+		pushq %rax # Push address onto the stack for later
+		incq %rcx # Increment address count on the stack
+		jmp compile_for_registers_nested_loop
 	
-	// compile_for_registers_nested_loop_end:
-	// # We can optimize this loop, so remove all the flags and continue through to compile_for_registers
+	compile_for_registers_nested_loop_end:
+	# We can optimize this loop, so remove all the flags and continue through to compile_for_registers
 
-	// 1:
-	// popq %rax # Get address of if or for
-	// andw $~FLAG_MAKE_REGISTER_LOOP, 6(%rax) # Remove make register flag
-	// loop 1b
-	// # Continue to compile_for_registers
+	1:
+	popq %rax # Get address of if or for
+	andw $~FLAG_MAKE_REGISTER_LOOP, 6(%rax) # Remove make register flag
+	loop 1b
+	# Continue to compile_for_registers
 
 
 compile_for_registers:
