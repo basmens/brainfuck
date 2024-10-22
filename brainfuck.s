@@ -34,7 +34,7 @@
 	// syscall
 .endm
 
-# Comment out here to switch on/off decompiling
+# Comment out here to switch on/off decxompiling
 .macro DECOMPILER
 	// jmp decomile_intermediate_src
 .endm
@@ -396,17 +396,18 @@ compile_out:
 
 ################################## None ##################################
 compile_for_no_optimizations:
+	testl %edx, %edx # Check if net movement is zero
+	jz 1f
+	orl $LOOP_CONTAINS_SCAN, -16(%rbp) # Loop contains a scan instruction
 	write_intermediate_instruction_offset $OP_CODE_RIGHT, %edx # Pop the net movement of this bracket frame
-	pop_bracket_frame
+	1:
 
+	pop_bracket_frame
 	movl -12(%rbp), %eax # Get offset from memory pointer
 	write_intermediate_instruction_offset $OP_CODE_FOR, %eax
 	addq $MAX_INSTRUCTION_SIZE_FOR + MAX_INSTRUCTION_SIZE_RIGHT, %r13 # Increment maximum executable memory size
 
 	orl $LOOP_CONTAINS_LOOP, -16(%rbp) # Loop contains a inner loop
-	testl %edx, %edx # Check if net movement is zero
-	jz read_loop # If so, continue reading
-	orl $LOOP_CONTAINS_SCAN, -16(%rbp) # Loop contains a scan instruction
 	jmp read_loop
 
 
@@ -600,7 +601,352 @@ compile_for_registers:
 	jmp read_loop
 
 
-	
+################################## Back and forth ##################################
+compile_back_and_forth_scan:
+	testl %edx, %edx # Check if movement is zero
+	jz 1f # If so, no need for right instruction
+	write_intermediate_instruction_offset $OP_CODE_RIGHT, %edx # Pop the net movement of this bracket frame
+	1:
+
+	movl -8(%rbp), %r10d # Get address after if
+	pop_bracket_frame
+	push %rdx # Push net movement of bracket frame for later use
+
+	movl -12(%rbp), %eax # Get offset from memory pointer
+	write_intermediate_instruction_offset $OP_CODE_FOR, %eax
+	addq $MAX_INSTRUCTION_SIZE_FOR + MAX_INSTRUCTION_SIZE_RIGHT, %r13 # Increment maximum executable memory size
+	orl $LOOP_CONTAINS_LOOP, -16(%rbp) # Loop contains a inner loop
+
+	/*
+		We loop through the instruction until we find a scan. Then, for each scan found, we check if the scan amount of this scan 
+		is a negative integer multiple of the previous scan, and the movement between the end of the previous scan and the start of
+		this one is an integer multiple of the previous scan amount. If those conditions are met, we can scan a few manual times
+		depending on the modifications between the scans, and then skip the memory pointer ahead to where the previous scan started,
+		rounded down to the nearest multiple of the current scan amount, and start scanning regularly from there on.
+
+		%r10 will be the index through the loop. %r8 will hold the address of the previous scan instruction. %r9 will hold the
+		amount of memory modifying instructions on the stack. %r11 will hold the current value of %rsp, for %rsp to be moving
+		about to store the addresses of the memory modifying instructions.
+	*/
+
+	# Scan through the loop
+	movq $-1, %r8 # No previous scan
+	xorq %r9, %r9 # Zero modifying instruction count on the stack
+	subq $8, %r10 # Decrement to increment in loop entry
+	pushq $0 # Push bracket depth onto the stack
+	movq %rsp, %r11 # Init %r11 at the current value of %rsp
+	compile_back_and_forth_loop:
+		# Increment and end condition
+		addq $8, %r10 # Increment index
+		cmpq %r10, %r12 # Exit if loop index is current for
+		je compile_back_and_forth_loop_end
+		movb (%r10), %dil # Get opcode
+
+		# Check if it is an if
+		cmpb $OP_CODE_IF, %dil
+		jne 1f
+		incq (%r11) # Increment bracket depth
+		1: # Check if it is a for
+		cmpb $OP_CODE_FOR, %dil
+		jne 1f
+		decq (%r11) # Increment bracket depth
+		1:
+
+		# Check if there is a previous scan
+		cmpq $-1, %r8 # Check if there is a previous scan
+		jne 1f
+		# If not, check if this is a scan
+		cmpb $OP_CODE_SCAN, %dil # Check if it is a scan
+		jne compile_back_and_forth_loop
+		movq %r10, %r8 # Set previous scan to current scan
+		jmp compile_back_and_forth_loop
+		1:
+
+		# Check if it is a scan
+		cmpb $OP_CODE_SCAN, %dil # Check if it is a scan
+		jne compile_back_and_forth_check_modification
+
+		# Check if the bracket depth is 0, if it isn't, then we can't optimize and have to reset
+		cmpq $0, (%r11) # Check if bracket depth is 0
+		jne compile_back_and_forth_fail_on_nested_scan
+
+		# Check if this scan amount is a negative integer multiple of the previous scan amount
+		movb 1(%r8), %dil # Get previous scan amount into %dil
+		movb 1(%r10), %al # Get current scan amount into %al
+
+		# Check basic opposite case, with the previous scan amount being minus the current scan amount
+		addb %dil, %al # Add them together
+		jnz 1f
+		orw $FLAG_SKIP_TIMES_ONE, 6(%r10) # Set start with skip flag
+		jmp 3f
+		1:
+		subb %dil, %al # Restore
+
+		# Check if %al is negative, if it is, negate it, otherwise negate %dil. Then do an unsigned division.
+		# Now, if their signs were not opposite, %al contains a positive number and %dil a negative number, or
+		# rather, because we are doing unsigned division, a large positive number, making the division guaranteed
+		# to have a remainder. Now we have the division and opposite sign check at the same time.
+		cmpb $0, %al # Check if %al is negative
+		jg 1f
+		negb %al
+		jmp 2f
+		1:
+		negb %dil
+		2:
+		xorb %ah, %ah # Clear remainder
+		divb %dil # Divide by dil
+		testb %ah, %ah # Check if the remainder is 0
+		jnz compile_back_and_forth_fail # If not, skip
+		3:
+
+		# Check if the movement between the end of the previous scan and the start of this one is an integer multiple
+		# of the previous scan amount. We do this by getting the difference between the addresses, taking the absolute
+		# value, and doing an unsigned division by %dil. If we got here, %dil is already positive. Then, if the remainder
+		# is 0, the movement is an integer multiple of the previous scan amount.
+		movl 2(%r10), %esi # Get address of current scan into %esi and %eax
+		movl %esi, %eax
+		subl 2(%r8), %eax # Get difference between addresses into %eax
+		cmpl $0, %eax # Check if difference is negative
+		jge 1f
+		negl %eax
+		1:
+		cmpb $127, %al # Check if difference is too large
+		ja compile_back_and_forth_fail
+		divb %dil # Divide by dil, remainder was already cleared my movl
+		testb %ah, %ah # Check if the remainder is 0
+		jnz compile_back_and_forth_fail # If not, skip
+
+		# Write flags into the scan instructions
+		orw $FLAG_SAFE_SCAN_ADDRESS, 6(%r8) # Set safe scan amount flag
+		orw $FLAG_START_SCAN_WITH_SKIP, 6(%r10) # Set start with skip flag
+		addq $MAX_SIZE_SCAN_INTRO, %r13 # Add size of scan intro to max executable size
+		
+		# Insert skip offset
+		movl 2(%r8), %eax
+		subl %esi, %eax
+		movb %al, 6(%r10)
+
+		# Write the single scans between the scan instructions
+		movl %esi, %edx # Get address of current scan into %edx
+		movl 2(%r8), %edi # Get address of previous scan into %edi
+		movsbl 1(%r10), %eax # Get scan amount of current scan into %rax
+		cmpb $0, %al # Check if we are writing to the left or to the right
+		jge 1f
+		3: # We are scanning left
+			cmpl %edi, %edx
+			jl	2f
+
+			# Check if this address is already present on the stack
+			testq %r9, %r9 # Check if there are any modifying instructions on the stack
+			jz 5f
+			movq %r9, %rcx
+			4:
+				cmpl %edx, -8(%rsp, %rcx, 8) # Check if address is already present
+				je 6f # If so, skip
+				loop 4b
+			5:
+			pushq %rdx
+			incq %r9
+			6:
+			addl %eax, %edx
+			jmp 3b
+		jmp 2f
+		1: # We are scanning right
+			cmpl %edi, %edx
+			jg 2f
+
+			# Check if this address is already present on the stack
+			testq %r9, %r9 # Check if there are any modifying instructions on the stack
+			jz 5f
+			movq %r9, %rcx
+			4:
+				cmpl %edx, -8(%rsp, %rcx, 8) # Check if address is already present
+				je 6f # If so, skip
+				loop 4b
+			5:
+			pushq %rdx
+			incq %r9
+			6:
+			addl %eax, %edx
+			jmp 1b
+		2:
+
+		# Filter out modifying instruction addresses that are not a positive integer multiple of the current scan amount.
+		# This also filters out addresses on the wrong side of the instruction. Also sort the addresses in ascending order,
+		# so with the lower address first to be popped.
+		movq %r9, %rcx
+		movsbq 1(%r10), %rdi # Get current scan amount into %rdi
+		1:
+			movl -8(%rsp, %rcx, 8), %eax # Get address of modifying instruction into %rax, movl zero extends
+			subq %rsi, %rax # Subtract address of current scan to get the offset from the current scan to the modifying instruction
+			cdqe # Sign extend %eax to %rax
+			cqo # Sign extend %rax into %rdx
+			idivq %rdi # Divide by the current scan amount
+			testq %rdx, %rdx # Check if the remainder is 0
+			jnz 2f # If not, remove it from the stack
+			cmpq $0, %rax # Check if the result is negative
+			jl 2f # If so, remove it from the stack
+
+			# Do sort pass
+			movq %r9, %rdx # Get amount of compares to do
+			subq %rcx, %rdx
+			negq %rdx # Negate to use as sib index
+			3:
+				# End condition and increment
+				testq %rdx, %rdx
+				jz 3f # If zero, exit
+				incq %rdx
+
+				# Compare
+				movl -8(%r11, %rdx, 8), %eax # Get higher element of the stack into %eax
+				cmpl %eax, -16(%r11, %rdx, 8) # Compare lower element < %eax
+				jl 3b # If smaller, don't swap
+				xchgl %eax, -16(%r11, %rdx, 8) # Swap
+				movl %eax, -8(%r11, %rdx, 8)
+				jmp 3b
+			3:
+			loop 1b
+			jmp 1f
+
+			# We remove the address by putting the last one into the current one and removing the last one
+			2:
+			popq %rax
+			movq %rax, -16(%rsp, %rcx, 8)
+			decq %r9
+			loop 1b
+		1:
+
+		# Check if we have zero scan single instructions to write
+		testq %r9, %r9
+		jnz 1f
+		movq %r10, %r8 # Get address of current scan into %r8
+		jmp compile_back_and_forth_loop
+		1:
+
+		# Copy every instruction including the current scan to the right to make enough space for the scan single instructions
+		movq %r12, %rcx # Get amount to move
+		subq %r10, %rcx
+		shrq $3, %rcx
+		movq %r9, %r8 # Get distance to move
+		shlq $3, %r8
+		addq %r8, %r12 # Move write pointer to new location
+		addq %r10, %r8 # Get index + distance into %r8
+		1:
+			movq -8(%r10, %rcx, 8), %rax # Copy instruction to new location
+			movq %rax, -8(%r8, %rcx, 8)
+			loop 1b
+		
+		# Write the scan single instructions
+		cmpb $0, %dil # Check if we need to write from stack in reverse order
+		jge 1f
+		# We are scanning left, so write in reverse order
+		movq %r9, %rcx
+		3:
+			popq %rdx # Get address of scan single, upper bits should be empty at this point
+			movl %edx, %eax # Calculate memory pointer movement if scan matches
+			subl %esi, %eax
+			shlq $16, %rdx # Shift address into location
+			movb $OP_CODE_SCAN_SINGLE, %dl # Set op code
+			movb %al, %dh # Set memory pointer movement
+			movq %rdx, -8(%r10, %rcx, 8) # Write instruction
+			loop 3b
+		jmp 2f
+
+		# We are scanning right, so write in non-reverse order
+		1:
+		xorq %rcx, %rcx
+		3:
+			popq %rdx # Get address of scan single, upper bits should be empty at this point
+			movl %edx, %eax # Calculate memory pointer movement if scan matches
+			subl %esi, %eax
+			shlq $16, %rdx # Shift address into location
+			movb $OP_CODE_SCAN_SINGLE, %dl # Set op code
+			movb %al, %dh # Set memory pointer movement
+			movq %rdx, (%r10, %rcx, 8) # Write instruction
+
+			incq %rcx
+			cmpq %rcx, %r9
+			jl 3b
+		2:
+
+		# Increment write pointer and max memory size
+		shlq $3, %r9 # Multiply by stack amount by 8
+		addq %r9, %r10 # Increment write pointer
+		movl $MAX_INSTRUCTION_SIZE_SCAN_SINGLE, %eax # Iancrease max executable memory size
+		mull %r9d
+		addl %eax, %r13d
+		xorq %r9, %r9 # Zero modifying instruction count on the stack
+		# Address of last scan was already set earlier in the copying over to make space
+		jmp compile_back_and_forth_loop
+
+		compile_back_and_forth_fail_on_nested_scan:
+		movq $-1, %r8 # No previous scan address
+		
+		# Scan until bracket depth is back to zero
+		1:
+			addq $8, %r10 # Increment index
+			movb (%r10), %dil # Get instruction
+
+			cmpb $OP_CODE_IF, %dil # Case if
+			jne 2f
+			incq (%r11) # Increment bracket depth
+			jmp 1b
+			2: # Case for
+			cmpb $OP_CODE_FOR, %dil
+			jne 1b
+			decq (%r11) # Decrement bracket depth
+			jnz 1b
+		jmp 1f
+
+		compile_back_and_forth_fail:
+		# Make previous scan address the current scan address
+		movq %r10, %r8
+
+		2:
+		# Pop modifying instructions of the stack
+		shlq $3, %r9 # Multiply by 8
+		addq %r9, %rsp # Pop modifying instructions of the stack
+		xorq %r9, %r9 # Zero modifying instruction count on the stack
+		jmp compile_back_and_forth_loop
+
+		compile_back_and_forth_check_modification:
+		# Check if it is a memory pointer move instruction, if it is, then a nested scan must be present
+		cmpb $OP_CODE_RIGHT, %dil
+		jne 1f
+		cmpq $0, (%r11) # Check if bracket depth is zero
+		je compile_back_and_forth_loop_end # If it is, this instruction could only have been at the end, so exit
+		jmp compile_back_and_forth_fail_on_nested_scan # If it isn't, this indicates a nested scan, so fail
+		1:
+
+		# Check if it is a memory modifying instruction
+		cmpb $OP_CODE_IN, %dil # Case in
+		je 1f
+		cmpb $OP_CODE_PLUS, %dil # Case plus onward
+		jl compile_back_and_forth_loop
+		1:
+
+		# Check if this address is already present on the stack
+		movl 2(%r10), %edi # Get address
+		testq %r9, %r9 # Check if there are any modifying instructions on the stack
+		jz 2f
+		movq %r9, %rcx
+		1:
+			cmpl %edi, -8(%rsp, %rcx, 8) # Check if address is already present
+			je compile_back_and_forth_loop # If so, skip
+			loop 1b
+		2:
+		
+		# If not, write it to the stack
+		pushq %rdi
+		incq %r9 # Increment modifying instruction count on the stack
+		jmp compile_back_and_forth_loop
+
+	compile_back_and_forth_loop_end:
+	addq $16, %rsp # Restore stack pointer
+	jmp read_loop
+
+
+
 
 .equ LOOP_CONTAINS_PLUS, 0x1
 .equ LOOP_CONTAINS_SET, 0x2
@@ -608,11 +954,11 @@ compile_for_registers:
 .equ LOOP_CONTAINS_OUT, 0x8
 .equ LOOP_CONTAINS_LOOP, 0x10
 .equ LOOP_HAS_TOTAL_RIGHT, 0x20
+.equ LOOP_CONTAINS_SCAN, 0x40
 
 # No optimizations possible
 .equ LOOP_NO_OPTIMIZATIONS, 0x10000000
 .equ LOOP_CONTAINS_IN, 0x10000000
-.equ LOOP_CONTAINS_SCAN, 0x10000000
 
 compile_loop_jmp_table:
 	.quad compile_for_no_optimizations # 0x00
@@ -679,6 +1025,70 @@ compile_loop_jmp_table:
 	.quad compile_for_no_optimizations # 0x3D
 	.quad compile_for_no_optimizations # 0x3E
 	.quad compile_for_no_optimizations # 0x3F
+	.quad compile_back_and_forth_scan  # 0x40 Candidates for back and forth scan optimization
+	.quad compile_back_and_forth_scan  # 0x41
+	.quad compile_back_and_forth_scan  # 0x42
+	.quad compile_back_and_forth_scan  # 0x43
+	.quad compile_back_and_forth_scan  # 0x44
+	.quad compile_back_and_forth_scan  # 0x45
+	.quad compile_back_and_forth_scan  # 0x46
+	.quad compile_back_and_forth_scan  # 0x47
+	.quad compile_back_and_forth_scan  # 0x48
+	.quad compile_back_and_forth_scan  # 0x49
+	.quad compile_back_and_forth_scan  # 0x4A
+	.quad compile_back_and_forth_scan  # 0x4B
+	.quad compile_back_and_forth_scan  # 0x4C
+	.quad compile_back_and_forth_scan  # 0x4D
+	.quad compile_back_and_forth_scan  # 0x4E
+	.quad compile_back_and_forth_scan  # 0x4F
+	.quad compile_back_and_forth_scan  # 0x50
+	.quad compile_back_and_forth_scan  # 0x51
+	.quad compile_back_and_forth_scan  # 0x52
+	.quad compile_back_and_forth_scan  # 0x53
+	.quad compile_back_and_forth_scan  # 0x54
+	.quad compile_back_and_forth_scan  # 0x55
+	.quad compile_back_and_forth_scan  # 0x56
+	.quad compile_back_and_forth_scan  # 0x57
+	.quad compile_back_and_forth_scan  # 0x58
+	.quad compile_back_and_forth_scan  # 0x59
+	.quad compile_back_and_forth_scan  # 0x5A
+	.quad compile_back_and_forth_scan  # 0x5B
+	.quad compile_back_and_forth_scan  # 0x5C
+	.quad compile_back_and_forth_scan  # 0x5D
+	.quad compile_back_and_forth_scan  # 0x5E
+	.quad compile_back_and_forth_scan  # 0x5F
+	.quad compile_back_and_forth_scan  # 0x60
+	.quad compile_back_and_forth_scan  # 0x61
+	.quad compile_back_and_forth_scan  # 0x62
+	.quad compile_back_and_forth_scan  # 0x63
+	.quad compile_back_and_forth_scan  # 0x64
+	.quad compile_back_and_forth_scan  # 0x65
+	.quad compile_back_and_forth_scan  # 0x66
+	.quad compile_back_and_forth_scan  # 0x67
+	.quad compile_back_and_forth_scan  # 0x68
+	.quad compile_back_and_forth_scan  # 0x69
+	.quad compile_back_and_forth_scan  # 0x6A
+	.quad compile_back_and_forth_scan  # 0x6B
+	.quad compile_back_and_forth_scan  # 0x6C
+	.quad compile_back_and_forth_scan  # 0x6D
+	.quad compile_back_and_forth_scan  # 0x6E
+	.quad compile_back_and_forth_scan  # 0x6F
+	.quad compile_back_and_forth_scan  # 0x70
+	.quad compile_back_and_forth_scan  # 0x71
+	.quad compile_back_and_forth_scan  # 0x72
+	.quad compile_back_and_forth_scan  # 0x73
+	.quad compile_back_and_forth_scan  # 0x74
+	.quad compile_back_and_forth_scan  # 0x75
+	.quad compile_back_and_forth_scan  # 0x76
+	.quad compile_back_and_forth_scan  # 0x77
+	.quad compile_back_and_forth_scan  # 0x78
+	.quad compile_back_and_forth_scan  # 0x79
+	.quad compile_back_and_forth_scan  # 0x7A
+	.quad compile_back_and_forth_scan  # 0x7B
+	.quad compile_back_and_forth_scan  # 0x7C
+	.quad compile_back_and_forth_scan  # 0x7D
+	.quad compile_back_and_forth_scan  # 0x7E
+	.quad compile_back_and_forth_scan  # 0x7F
 
 
 ##############################################################################################################################################
@@ -1229,6 +1639,110 @@ byte_code_load_loop_count_scan:
 40:
 .endm
 
+################################## Scan single logic ##################################
+.equ MAX_INSTRUCTION_SIZE_SCAN_SINGLE, 20
+byte_code_scan_single:
+	.byte 0x41, 0x80, 0xBC, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00		#0  cmpb $0, address(%r12)
+	.byte 0x75, 0x09												#9  jne 1f
+	.byte 0x41, 0x83, 0xC4, 0x00									#11 addl $skip_amount, %r12
+	.byte 0xE9, 0x00, 0x00, 0x00, 0x00								#15 jmp address_after_scan	1:
+byte_code_scan_single_zero: # If the skip amount is zero, it can be simplified
+	.byte 0x41, 0x80, 0xBC, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00		#0  cmpb $0, address(%r12)
+	.byte 0x0F, 0x84, 0x00, 0x00, 0x00, 0x00						#9  je address_after_scan
+.macro write_instruction_scan_single skip_amount, address
+	# Write common code
+	movl $0x24BC8041, (%r13)
+	movl \address, 4(%r13)
+
+	# Check if skip amount is zero
+	testb \skip_amount, \skip_amount
+	jz 1f
+
+	# Write case not zero
+	movl $0x41097500, 8(%r13)
+	movl $0xE900C483, 12(%r13)
+	movb \skip_amount, 14(%r13)
+	addq $MAX_INSTRUCTION_SIZE_SCAN_SINGLE, %r13
+	jmp 2f
+
+	# Write case zero
+	1:
+	movl $0x00840F00, 8(%r13)
+	addq $15, %r13
+	2:
+.endm
+
+.equ MAX_SIZE_SCAN_INTRO, 27
+byte_code_scan_intro:
+	.byte 0x4D, 0x89, 0xE7								#-3 movq %r12, %r15 To be inserted below the next line, if safe_scan flag is on
+	.byte 0x4C, 0x89, 0xF8								#0  movq %r15, %rax
+	.byte 0x4C, 0x29, 0xE0								#3  subq %r12, %rax
+	.byte 0x48, 0x99									#6  cqo
+	.byte 0x48, 0xC7, 0xC1, 0x00, 0x00, 0x00, 0x00		#8  movq $scan_amount, %rcx
+	.byte 0x48, 0xF7, 0xF9								#15 idivq %rcx
+	.byte 0x48, 0xF7, 0xE9								#18 imulq %rcx
+	.byte 0x49, 0x89, 0xC4								#21 movq %rax, %r12
+byte_code_scan_intro_single:
+	.byte 0x4D, 0x87, 0xFC								#0  xchgq %r15, %r12
+
+# Start of both cases
+# .byte 0x49, 0x83, 0xC7, 0x00				#0 addq $skip_offset, %r15
+# .byte 0x4D, 0x39, 0xE7					#4 cmpq %r12, %r15
+# .byte 0x7F, 0x00							#7 jg address_after_intro		To be changed into jl depending on scan direction
+.macro write_scan_intro scan_amount, skip_offset, flags
+	testw $FLAG_START_SCAN_WITH_SKIP, \flags
+	jz 1f
+
+	# Write common instructions
+	addb \scan_amount, \skip_offset
+	testb \skip_offset, \skip_offset
+	jz 2f
+	movl $0x00C78349, (%r13)
+	movb \skip_offset, 3(%r13)
+	movl $0x7FE7394D, 4(%r13)
+	addq $9, %r13
+	cmpb $0, \scan_amount
+	jge 2f
+	movb $0x7C, 7(%r13) # Change jg to jl
+	2:
+
+	testw $FLAG_SKIP_TIMES_ONE, \flags
+	jz 2f
+
+	# Write scan simple
+	movl $0x00FC874D, (%r13)
+	movb $3, -1(%r13)
+	addq $3, %r13
+	jmp 4f
+	
+	# Write scan with multiplication
+	2:
+	movq $byte_code_scan_intro + 3, %rsi # Source
+	movb $24, -1(%r13)
+
+	testw $FLAG_SAFE_SCAN_ADDRESS, \flags
+	jz 3f
+	movl $0x4CE7894D, (%r13)
+	movw $0xF889, 4(%r13)
+	movb $27, -1(%r13)
+	addq $6, %r13
+	3:
+	
+	movq $3, %rcx # Quad count
+	movq %r13, %rdi # Destination
+	rep movsq
+	movb \scan_amount, 11(%r13)
+	addq $MAX_SIZE_SCAN_INTRO, %r13
+
+	1:
+	testw $FLAG_SAFE_SCAN_ADDRESS, \flags
+	jz 4f
+	movl $0x00E7894D, (%r13) # movq %r12, %r15
+	addq $3, %r13
+	4:
+.endm
+
+
 ################################## Scan ##################################
 .equ MAX_INSTRUCTION_SIZE_SCAN, INSTRUCTION_SIZE_SCAN_LEFT_3
 .equ INSTRUCTION_SIZE_SCAN_LOOP, 25
@@ -1512,6 +2026,7 @@ compile_second_pass:
 	# %r12 becomes the intermediate source
 	# %r13 becomes the executable source block
 	# %r14 contains the variable to use for multiplication
+	# %r15 contains the amount of scan single instructions before the scan
 	# The next instruction is passed through %rdx
 
 	# Write exit
@@ -1539,6 +2054,7 @@ compile_second_pass:
 
 	# Loop through intermediate source
 	movq $intermediate_src - 8, %r12 # Init %12 to the start of intermediate source
+	xorq %r15, %r15 # Init %r15 to 0
 compile_second_pass_loop:
 	# Get next instruction
 	addq $8, %r12 # Increment index in intermediate source
@@ -1553,29 +2069,37 @@ compile_second_pass_loop:
 /*
 	Each instruction contains 8 bytes: the first is op code. The next is the amount, regardless of if the instruction requires it.
 	The next 4 bytes are the memory pointer offset, regardless of if the instruction requires it. And the final 2 bytes contain
-	some flags the instruction might use.
+	some flags the instruction might use. Exception: scan used the second to last byte as the skip offset, only the last byte is
+	uesd for flags.
 */
 .equ OP_CODE_EXIT, 0
-.equ OP_CODE_RIGHT, 1
-.equ OP_CODE_SCAN, 2
-.equ OP_CODE_IN, 3
-.equ OP_CODE_OUT, 4 # Everything from if onward supports registers
-.equ OP_CODE_IF, 5
-.equ OP_CODE_FOR, 6
-.equ OP_CODE_PLUS, 7
-.equ OP_CODE_SET, 8
-.equ OP_CODE_LOAD_LOOP_COUNT, 9
-.equ OP_CODE_MULT_ADD, 10
+.equ OP_CODE_NOP, 1
+.equ OP_CODE_RIGHT, 2
+.equ OP_CODE_SCAN_SINGLE, 3
+.equ OP_CODE_SCAN, 4
+.equ OP_CODE_IN, 5
+.equ OP_CODE_OUT, 6 # Everything from out onward supports registers
+.equ OP_CODE_IF, 7
+.equ OP_CODE_FOR, 8
+.equ OP_CODE_PLUS, 9 # Everything from plus onward modifies memory, plus the in instruction
+.equ OP_CODE_SET, 10
+.equ OP_CODE_LOAD_LOOP_COUNT, 11
+.equ OP_CODE_MULT_ADD, 12
 
 .equ FLAG_MAKE_REGISTER_LOOP, 0x1 # Only for if and for instructions
 .equ FLAG_USE_REGISTER, 0x2
 .equ FLAG_LAST_MULT_ADD, 0x4 # If the multiplication is only used once, the load loop count doesn't need to be preserved
+.equ FLAG_SAFE_SCAN_ADDRESS, 0x100
+.equ FLAG_START_SCAN_WITH_SKIP, 0x200
+.equ FLAG_SKIP_TIMES_ONE, 0x400
 
 .equ MAX_REGISTER_COUNT, 8 # We got cl, dl, dil, sil, r8b, r9b, r10b and r11b, so thats 8 registers
 
 sp_compile_jmp_table:
 	.quad sp_compile_exit
+	.quad sp_compile_nop
 	.quad sp_compile_right
+	.quad sp_compile_scan_single
 	.quad sp_compile_scan
 	.quad sp_compile_in
 	.quad sp_compile_out
@@ -1597,15 +2121,42 @@ sp_compile_exit:
 
 	jmp execute
 
+sp_compile_nop:
+	jmp compile_second_pass_loop
+
 sp_compile_right:
 	shrq $16, %rdx # Get amount
 	write_instruction_right %edx
 	jmp compile_second_pass_loop
 
+sp_compile_scan_single:
+	movb %dh, %al # Get skip amount
+	shrq $16, %rdx # Get memory pointer offset
+	write_instruction_scan_single %al, %edx
+
+	pushq %r13 # Save address of first instruction after the scan single
+	incq %r15
+	jmp compile_second_pass_loop
+
 sp_compile_scan:
 	movb %dh, %al # Get amount
 	shrq $16, %rdx # Get memory pointer offset
+	movq %rdx, %rcx # Get flags
+	shrq $32, %rcx
+	write_scan_intro %al, %cl, %cx
 	write_scan %al, %edx
+
+	# Write scan single count
+	testq %r15, %r15 # Check if we need to write scan single count
+	jz compile_second_pass_loop
+	movq %r15, %rcx # Get scan single count
+	xorq %r15, %r15
+	1:
+		popq %rax # Get address of first instruction after the scan single
+		movq %r13, %rdx # Calculate offset to write
+		subq %rax, %rdx
+		movl %edx, -4(%rax) # Write offset
+		loop 1b
 	jmp compile_second_pass_loop
 
 sp_compile_in:
