@@ -721,16 +721,30 @@ compile_back_and_forth_scan:
 		orw $FLAG_SAFE_SCAN_ADDRESS, 6(%r8) # Set safe scan amount flag
 		orw $FLAG_START_SCAN_WITH_SKIP, 6(%r10) # Set start with skip flag
 		addq $MAX_SIZE_SCAN_INTRO, %r13 # Add size of scan intro to max executable size
-		
+
 		# Insert skip offset
 		movl 2(%r8), %eax
 		subl %esi, %eax
 		movb %al, 6(%r10)
 
+		# Check if ckech before skip flag is to be written
+		movsbl 1(%r10), %edx # Get scan amount of current scan into %edx
+		cmpl $0, %edx
+		jge 1f
+		cmpl $0, %eax # We are scanning right, so write flag if %eax is greater than 0
+		jle 2f
+		orw $FLAG_CHECK_BEFORE_SCAN_SKIP, 6(%r10)
+		jmp 2f
+		1:
+		cmpl $0, %eax # We are scanning left, so write flag if %eax is less than 0
+		jge 2f
+		orw $FLAG_CHECK_BEFORE_SCAN_SKIP, 6(%r10)
+		2:
+
 		# Write the single scans between the scan instructions
 		movl %esi, %edx # Get address of current scan into %edx
 		movl 2(%r8), %edi # Get address of previous scan into %edi
-		movsbl 1(%r10), %eax # Get scan amount of current scan into %rax
+		movl %edx, %eax # Get scan amount of current scan into %eax
 		cmpb $0, %al # Check if we are writing to the left or to the right
 		jge 1f
 		3: # We are scanning left
@@ -1069,8 +1083,22 @@ compile_back_and_forth_scan:
 	movb %al, 6(%r10)
 	movb %al, 8(%r11) # Save for writing the init wrapped scan skip instruction
 
+	# Check if ckech before skip flag is to be written
+	movsbq 1(%r10), %rdx # Get scan amount of current scan into %edx
+	cmpl $0, %edx
+	jge 1f
+	cmpl $0, %eax # We are scanning right, so write flag if %eax is greater than 0
+	jle 2f
+	orw $FLAG_CHECK_BEFORE_SCAN_SKIP, 6(%r10)
+	jmp 2f
+	1:
+	cmpl $0, %eax # We are scanning left, so write flag if %eax is less than 0
+	jge 2f
+	orw $FLAG_CHECK_BEFORE_SCAN_SKIP, 6(%r10)
+	2:
+
 	# Get the highest number in %r9 for which %r9 times the current scan amount is a memory modifying insturction address, plus one
-	movsbq 1(%r10), %rdi # Get current scan amount into %rdi
+	movq %rdx, %rdi # Get current scan amount into %rdi
 	movq %r9, %rcx
 	movq $-1, %r9
 	testq %rcx, %rcx # Test if the stack contains any modifying instruction addresses
@@ -1900,7 +1928,7 @@ byte_code_scan_intro_single:
 # Start of both cases
 # .byte 0x49, 0x83, 0xC7, 0x00				#0 addq $skip_offset, %r15
 # .byte 0x4D, 0x39, 0xE7					#4 cmpq %r12, %r15
-# .byte 0x7C, 0x00							#7 jl address_after_intro		To be changed into jg depending on scan direction
+# .byte 0x7C, 0x03							#7 jl address_after_intro		To be changed into jg depending on scan direction
 .macro write_scan_intro scan_amount, skip_offset, flags
 	testw $FLAG_START_SCAN_WITH_SKIP, \flags
 	jz 1f
@@ -1912,22 +1940,23 @@ byte_code_scan_intro_single:
 	movl $0x00C78349, (%r13)
 	movb \skip_offset, 3(%r13)
 	addq $4, %r13
-
 	2:
+
 	# Write common if instruction
+	testw $FLAG_CHECK_BEFORE_SCAN_SKIP, \flags
+	jz 3f
 	movl $0x7CE7394D, (%r13)
 	cmpb $0, \scan_amount
 	jge 2f
 	movb $0x7F, 3(%r13) # Change jl to jg
 	2:
 	addq $5, %r13
+	3:
 
 	testw $FLAG_SKIP_TIMES_ONE, \flags
 	jz 2f
-
 	# Write scan simple
 	movl $0x00FC874D, (%r13)
-	movb $3, -1(%r13)
 	addq $3, %r13
 	jmp 4f
 	
@@ -1940,7 +1969,10 @@ byte_code_scan_intro_single:
 	jz 3f
 	movl $0x4CE7894D, (%r13)
 	movw $0xF889, 4(%r13)
+	testw $FLAG_CHECK_BEFORE_SCAN_SKIP, \flags
+	jz 2f
 	movb $27, -1(%r13)
+	2:
 	addq $6, %r13
 	3:
 	
@@ -2324,6 +2356,7 @@ compile_second_pass_loop:
 .equ FLAG_SAFE_SCAN_ADDRESS, 0x100
 .equ FLAG_START_SCAN_WITH_SKIP, 0x200
 .equ FLAG_SKIP_TIMES_ONE, 0x400
+.equ FLAG_CHECK_BEFORE_SCAN_SKIP, 0x800
 
 .equ MAX_REGISTER_COUNT, 8 # We got cl, dl, dil, sil, r8b, r9b, r10b and r11b, so thats 8 registers
 
