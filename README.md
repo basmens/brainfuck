@@ -1,6 +1,12 @@
 # About
 This is a brainfuck interpreter written in assembly. It was a university assignment for Computer Organization, and for people who wanted and extra challange, there was a competition held about who could make the fastest interpreter. I took part in the competition and tried to optimize my compiler a lot. I was told I did quite well in the competition, but segfaulted in one of the later rounds, disqualifying me from the tournament. I think the segfault was caused by a too small memory buffer for the JIT compiler, since I did not make a dynamically growing buffer because of a lack of time (I was working on the program alone because I couldn't find a teammate).
 
+# Features
+* This interpreter uses a JIT compiler to gain speed
+* Repeated instructions get combined into 1 (+++ would get comined into one plus 3)
+* Common patterns like multiplication and setting a memory cells to zero are optimized
+* Scan loops in brainfuck are optimized using simd instructions
+
 # How to run
 * I developed my compiler in WSL Ubuntu, so start by getting that setup.
 * Then compile using
